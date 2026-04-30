@@ -1,0 +1,10 @@
+﻿# Frontend
+node_modules/
+dist/
+
+# Local database
+data/*.db
+data/*.sqlite
+
+# Logs
+*.log
