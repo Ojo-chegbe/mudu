@@ -1,12 +1,16 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../store/useAppStore";
 
 export function SettingsPage() {
+  const navigate = useNavigate();
   const lecturerName = useAppStore((s) => s.lecturerName);
   const institution = useAppStore((s) => s.institution);
   const department = useAppStore((s) => s.department);
   const setProfile = useAppStore((s) => s.setProfile);
   const pushToast = useAppStore((s) => s.pushToast);
+  const askConfirm = useAppStore((s) => s.askConfirm);
+  const logOut = useAppStore((s) => s.logOut);
 
   const [name, setName] = useState(lecturerName || "Dr. Chukwudi");
   const [inst, setInst] = useState(institution || "University of Nigeria");
@@ -17,10 +21,25 @@ export function SettingsPage() {
     pushToast("Profile saved successfully.", "success");
   };
 
+  const handleLogout = () => {
+    askConfirm({
+      title: "Log out?",
+      description: "This will end your current app session on this device.",
+      confirmLabel: "Log out",
+      tone: "danger",
+      onConfirm: () => {
+        logOut();
+        pushToast("Logged out successfully.", "success");
+        navigate("/login");
+      }
+    });
+  };
+
   return (
     <div className="stack gap-6">
       <div className="page-header">
         <h1 className="page-title">Settings</h1>
+        <button className="btn btn-danger" onClick={handleLogout}>Log out</button>
       </div>
 
       <div className="grid-2">

@@ -11,6 +11,8 @@ import { ResultsPage } from "../pages/ResultsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { DocsPage } from "../pages/DocsPage";
 import { NotificationsPage } from "../pages/NotificationsPage";
+import { LoginPage, SignUpPage } from "../pages/AuthPages";
+import { useAppStore } from "../store/useAppStore";
 import {
   StudentExamPage,
   StudentInstructionsPage,
@@ -19,9 +21,10 @@ import {
 } from "../pages/StudentPortalPage";
 
 export function AppRoutes() {
+  const isAuthenticated = useAppStore((s) => s.isAuthenticated);
   return (
     <Routes>
-      <Route element={<AppLayout />}>
+      <Route element={isAuthenticated ? <AppLayout /> : <Navigate to="/login" replace />}>
         <Route path="/" element={<HomePage />} />
         <Route path="/exams/new" element={<ExamCreatePage />} />
         <Route path="/question-bank" element={<QuestionBankPage />} />
@@ -34,11 +37,13 @@ export function AppRoutes() {
         <Route path="/docs" element={<DocsPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
       </Route>
+      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />} />
+      <Route path="/signup" element={isAuthenticated ? <Navigate to="/" replace /> : <SignUpPage />} />
       <Route path="/student/login" element={<StudentLoginPage />} />
       <Route path="/student/instructions" element={<StudentInstructionsPage />} />
       <Route path="/student/exam" element={<StudentExamPage />} />
       <Route path="/student/submitted" element={<StudentSubmittedPage />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
     </Routes>
   );
 }

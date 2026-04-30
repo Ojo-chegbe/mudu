@@ -182,7 +182,18 @@ type NewExamInput = {
   rosterId: string;
 };
 
+type AuthUser = {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  createdAt: string;
+};
+
 type AppState = {
+  isAuthenticated: boolean;
+  currentUserId: string | null;
+  authUsers: AuthUser[];
   lecturerName: string;
   institution: string;
   department: string;
@@ -266,11 +277,17 @@ type AppState = {
   closeConfirm: () => void;
   pushToast: (message: string, tone?: Toast["tone"]) => void;
   removeToast: (id: string) => void;
+  signUp: (name: string, email: string, password: string) => { ok: boolean; message: string };
+  logIn: (email: string, password: string) => { ok: boolean; message: string };
+  logOut: () => void;
 };
 
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
+      isAuthenticated: false,
+      currentUserId: null,
+      authUsers: [],
       lecturerName: "",
       institution: "",
       department: "",
@@ -612,6 +629,56 @@ export const useAppStore = create<AppState>()(
         set((state) => ({ toasts: [...state.toasts.slice(-2), toast] }));
       },
       removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }))
+      ,
+      signUp: (name, email, password) => {
+        const cleanName = name.trim();
+        const cleanEmail = email.trim().toLowerCase();
+        if (!cleanName || !cleanEmail || !password.trim()) {
+          return { ok: false, message: "All fields are required." };
+        }
+        const exists = get().authUsers.some((u) => u.email === cleanEmail);
+        if (exists) {
+          return { ok: false, message: "An account with this email already exists." };
+        }
+        const user: AuthUser = {
+          id: makeId("usr"),
+          name: cleanName,
+          email: cleanEmail,
+          password,
+          createdAt: now()
+        };
+        set((state) => ({
+          authUsers: [user, ...state.authUsers],
+          isAuthenticated: true,
+          currentUserId: user.id,
+          lecturerName: cleanName
+        }));
+        return { ok: true, message: "Account created successfully." };
+      },
+      logIn: (email, password) => {
+        const cleanEmail = email.trim().toLowerCase();
+        const user = get().authUsers.find((u) => u.email === cleanEmail && u.password === password);
+        if (!user) {
+          return { ok: false, message: "Invalid email or password." };
+        }
+        set({
+          isAuthenticated: true,
+          currentUserId: user.id,
+          lecturerName: user.name
+        });
+        return { ok: true, message: "Login successful." };
+      },
+      logOut: () => {
+        set({
+          isAuthenticated: false,
+          currentUserId: null,
+          lecturerName: "",
+          institution: "",
+          department: "",
+          onboardingComplete: false,
+          onboardingStep: 0
+        });
+      }
     }),
     {
       name: "mudu-app-state-v3",
@@ -627,6 +694,9 @@ export const useAppStore = create<AppState>()(
       },
       partialize: (state) => ({
         lecturerName: state.lecturerName,
+        isAuthenticated: state.isAuthenticated,
+        currentUserId: state.currentUserId,
+        authUsers: state.authUsers,
         institution: state.institution,
         department: state.department,
         onboardingComplete: state.onboardingComplete,
