@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { isApiClientError, loginLecturer, signupLecturer } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
 function AuthShell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
@@ -18,10 +19,10 @@ function AuthShell({ title, subtitle, children }: { title: string; subtitle: str
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const logIn = useAppStore((s) => s.logIn);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   return (
     <AuthShell title="Login" subtitle="Access your lecturer dashboard">
@@ -36,17 +37,32 @@ export function LoginPage() {
       {error ? <div className="badge badge-error" style={{ whiteSpace: "normal" }}>{error}</div> : null}
       <button
         className="btn btn-primary btn-lg"
-        onClick={() => {
-          const result = logIn(email, password);
-          if (!result.ok) {
-            setError(result.message);
-            return;
+        disabled={busy}
+        onClick={async () => {
+          try {
+            setBusy(true);
+            const result = await loginLecturer({ email, password });
+            useAppStore.setState({
+              isAuthenticated: true,
+              currentUserId: result.profile.id,
+              lecturerName: result.profile.name,
+              institution: result.profile.institution ?? "",
+              department: result.profile.department ?? ""
+            });
+            setError("");
+            navigate("/");
+          } catch (err) {
+            if (isApiClientError(err) && err.code === "INVALID_CREDENTIALS") {
+              setError("Invalid email or password.");
+            } else {
+              setError(err instanceof Error ? err.message : "Login failed.");
+            }
+          } finally {
+            setBusy(false);
           }
-          setError("");
-          navigate("/");
         }}
       >
-        Login
+        {busy ? "Logging in..." : "Login"}
       </button>
       <p style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
         No account? <Link to="/signup" style={{ color: "var(--color-primary)" }}>Create one</Link>
@@ -57,11 +73,11 @@ export function LoginPage() {
 
 export function SignUpPage() {
   const navigate = useNavigate();
-  const signUp = useAppStore((s) => s.signUp);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   return (
     <AuthShell title="Sign Up" subtitle="Create your lecturer account">
@@ -80,17 +96,38 @@ export function SignUpPage() {
       {error ? <div className="badge badge-error" style={{ whiteSpace: "normal" }}>{error}</div> : null}
       <button
         className="btn btn-primary btn-lg"
-        onClick={() => {
-          const result = signUp(name, email, password);
-          if (!result.ok) {
-            setError(result.message);
-            return;
+        disabled={busy}
+        onClick={async () => {
+          try {
+            setBusy(true);
+            const result = await signupLecturer({ name, email, password });
+            useAppStore.setState({
+              isAuthenticated: true,
+              currentUserId: result.profile.id,
+              lecturerName: result.profile.name,
+              institution: result.profile.institution ?? "",
+              department: result.profile.department ?? ""
+            });
+            setError("");
+            navigate("/");
+          } catch (err) {
+            if (isApiClientError(err)) {
+              if (err.code === "EMAIL_ALREADY_EXISTS") {
+                setError("An account already exists with this email.");
+              } else if (err.code === "MISSING_SIGNUP_FIELDS") {
+                setError("Please fill all required fields.");
+              } else {
+                setError(err.message);
+              }
+            } else {
+              setError(err instanceof Error ? err.message : "Signup failed.");
+            }
+          } finally {
+            setBusy(false);
           }
-          setError("");
-          navigate("/");
         }}
       >
-        Create Account
+        {busy ? "Creating..." : "Create Account"}
       </button>
       <p style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
         Already have an account? <Link to="/login" style={{ color: "var(--color-primary)" }}>Login</Link>

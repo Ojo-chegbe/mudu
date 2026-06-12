@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   IconBell,
@@ -12,6 +13,7 @@ import {
   IconSidebarCollapse,
   IconStudents
 } from "../components/Icons";
+import { fetchDashboardRequest, fetchExamSessionsRequest, fetchExamsRequest, fetchSyncStatusRequest } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
 const mainNav = [
@@ -46,17 +48,57 @@ export function AppLayout() {
   const crumbs = breadcrumbMap[location.pathname] || ["Home"];
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const exams = useAppStore((s) => s.exams);
-  const sessions = useAppStore((s) => s.sessions);
-  const syncItems = useAppStore((s) => s.syncItems);
   const toasts = useAppStore((s) => s.toasts);
+  const [backendNotificationCount, setBackendNotificationCount] = useState(0);
 
-  const pendingOrErroredSync = syncItems.filter((i) => i.status === "Pending" || i.status === "Error").length;
-  const flaggedCount = sessions.filter((s) => s.flags > 0).length;
-  const disconnectedCount = sessions.filter((s) => s.status === "Disconnected").length;
-  const runningCount = exams.filter((e) => e.status === "Running").length;
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadNotificationCount() {
+      try {
+        const [dashboard, syncStatus, exams] = await Promise.all([
+          fetchDashboardRequest(),
+          fetchSyncStatusRequest(),
+          fetchExamsRequest()
+        ]);
+
+        const runningExams = exams.filter((exam) => exam.status === "Running" || exam.status === "Active");
+        const sessions = (
+          await Promise.all(
+            runningExams.map((exam) =>
+              fetchExamSessionsRequest(exam.id).catch(() => [])
+            )
+          )
+        ).flat();
+
+        const unsyncedMetric = dashboard.metrics.find((metric) => metric.label === "Unsynced Exams");
+        const unsyncedCount = Number(unsyncedMetric?.value ?? 0);
+        const flaggedCount = sessions.filter((session) => session.flags > 0).length;
+        const disconnectedCount = sessions.filter((session) => session.status === "Disconnected").length;
+        const syncDeferredCount = syncStatus.cloudSyncDeferred ? 1 : 0;
+
+        if (!cancelled) {
+          setBackendNotificationCount(
+            unsyncedCount + flaggedCount + disconnectedCount + runningExams.length + syncDeferredCount
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setBackendNotificationCount(0);
+        }
+      }
+    }
+
+    void loadNotificationCount();
+    const interval = window.setInterval(() => void loadNotificationCount(), 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const recentActivity = toasts.length;
-  const notificationCount = pendingOrErroredSync + flaggedCount + disconnectedCount + runningCount + recentActivity;
+  const notificationCount = backendNotificationCount + recentActivity;
 
   return (
     <div className={`app-shell${sidebarCollapsed ? " collapsed" : ""}`}>

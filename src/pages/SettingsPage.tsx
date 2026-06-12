@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { fetchAppSettings, fetchLecturerProfile, logoutLecturer, updateAppSettings, updateLecturerProfile, type AppSettings } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
 export function SettingsPage() {
@@ -15,10 +16,52 @@ export function SettingsPage() {
   const [name, setName] = useState(lecturerName || "Dr. Chukwudi");
   const [inst, setInst] = useState(institution || "University of Nigeria");
   const [dept, setDept] = useState(department || "Computer Science");
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const loggingOutRef = useRef(false);
 
-  const handleSave = () => {
-    setProfile(name, inst, dept);
-    pushToast("Profile saved successfully.", "success");
+  useEffect(() => {
+    let mounted = true;
+    void Promise.all([fetchLecturerProfile(), fetchAppSettings()])
+      .then(([profile, app]) => {
+        if (!mounted) return;
+        if (profile) {
+          setName(profile.name);
+          setInst(profile.institution ?? "");
+          setDept(profile.department ?? "");
+        }
+        setSettings(app);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        pushToast(err instanceof Error ? err.message : "Failed to load settings.", "error");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    if (!settings) return;
+    try {
+      setBusy(true);
+      const [profile, app] = await Promise.all([
+        updateLecturerProfile({
+          name: name.trim(),
+          institution: inst.trim(),
+          department: dept.trim()
+        }),
+        updateAppSettings(settings)
+      ]);
+      setProfile(profile.name, profile.institution ?? "", profile.department ?? "");
+      setSettings(app);
+      pushToast("Settings saved successfully.", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to save settings.", "error");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleLogout = () => {
@@ -27,10 +70,23 @@ export function SettingsPage() {
       description: "This will end your current app session on this device.",
       confirmLabel: "Log out",
       tone: "danger",
-      onConfirm: () => {
-        logOut();
-        pushToast("Logged out successfully.", "success");
-        navigate("/login");
+      onConfirm: async () => {
+        if (loggingOutRef.current) {
+          return;
+        }
+        loggingOutRef.current = true;
+        setLoggingOut(true);
+        try {
+          await logoutLecturer();
+          logOut();
+          pushToast("Logged out successfully.", "success");
+          navigate("/login");
+        } catch (err) {
+          pushToast(err instanceof Error ? err.message : "Failed to log out. Please try again.", "error");
+        } finally {
+          loggingOutRef.current = false;
+          setLoggingOut(false);
+        }
       }
     });
   };
@@ -39,7 +95,9 @@ export function SettingsPage() {
     <div className="stack gap-6">
       <div className="page-header">
         <h1 className="page-title">Settings</h1>
-        <button className="btn btn-danger" onClick={handleLogout}>Log out</button>
+        <button className="btn btn-danger" disabled={loggingOut} onClick={handleLogout}>
+          {loggingOut ? "Logging out..." : "Log out"}
+        </button>
       </div>
 
       <div className="grid-2">
@@ -66,17 +124,66 @@ export function SettingsPage() {
           <h3 style={{ fontSize: "16px", fontWeight: 600 }}>Exam Defaults</h3>
           <div className="form-group">
             <label className="form-label">Default Duration (minutes)</label>
-            <input className="form-input" type="number" defaultValue={60} />
+            <input
+              className="form-input"
+              type="number"
+              value={settings?.defaultExamDurationMinutes ?? 60}
+              onChange={(e) =>
+                setSettings((prev) =>
+                  prev
+                    ? { ...prev, defaultExamDurationMinutes: Math.max(1, Number(e.target.value) || 60) }
+                    : prev
+                )
+              }
+            />
           </div>
           <div className="form-group">
             <label className="form-label">Recovery Window (minutes)</label>
-            <input className="form-input" type="number" defaultValue={10} />
+            <input
+              className="form-input"
+              type="number"
+              value={settings?.recoveryWindowMinutes ?? 10}
+              onChange={(e) =>
+                setSettings((prev) =>
+                  prev
+                    ? { ...prev, recoveryWindowMinutes: Math.max(1, Number(e.target.value) || 10) }
+                    : prev
+                )
+              }
+            />
           </div>
           <div className="stack gap-2">
-            <div className="switch-row"><span>Fullscreen Enforcement</span><button className="switch-track on"><span className="switch-knob" /></button></div>
-            <div className="switch-row"><span>Tab Monitoring</span><button className="switch-track on"><span className="switch-knob" /></button></div>
-            <div className="switch-row"><span>Shuffle Questions</span><button className="switch-track on"><span className="switch-knob" /></button></div>
+            <div className="switch-row">
+              <span>Fullscreen Enforcement</span>
+              <button
+                className={`switch-track ${settings?.fullscreenRequired ? "on" : ""}`}
+                onClick={() => setSettings((prev) => (prev ? { ...prev, fullscreenRequired: !prev.fullscreenRequired } : prev))}
+              >
+                <span className="switch-knob" />
+              </button>
+            </div>
+            <div className="switch-row">
+              <span>Tab Monitoring</span>
+              <button
+                className={`switch-track ${settings?.tabMonitoringEnabled ? "on" : ""}`}
+                onClick={() => setSettings((prev) => (prev ? { ...prev, tabMonitoringEnabled: !prev.tabMonitoringEnabled } : prev))}
+              >
+                <span className="switch-knob" />
+              </button>
+            </div>
+            <div className="switch-row">
+              <span>Shuffle Questions</span>
+              <button
+                className={`switch-track ${settings?.shuffleQuestions ? "on" : ""}`}
+                onClick={() => setSettings((prev) => (prev ? { ...prev, shuffleQuestions: !prev.shuffleQuestions } : prev))}
+              >
+                <span className="switch-knob" />
+              </button>
+            </div>
           </div>
+          <button className="btn btn-primary" disabled={!settings || busy} onClick={() => void handleSave()}>
+            {busy ? "Saving..." : "Save Defaults"}
+          </button>
         </div>
       </div>
 

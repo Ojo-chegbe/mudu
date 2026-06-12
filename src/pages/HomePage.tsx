@@ -1,9 +1,17 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { DropdownMenu } from "../components/DropdownMenu";
-import { IconPlus, IconEdit, IconCopy, IconDownload, IconArchive, IconTrash, IconCalendar, IconHistoryClock, IconRocket } from "../components/Icons";
+import { IconPlus, IconEdit, IconCopy, IconArchive, IconTrash, IconCalendar, IconHistoryClock, IconRocket } from "../components/Icons";
 import { useAppStore } from "../store/useAppStore";
-import type { Exam } from "../types";
+import {
+  archiveExamRequest,
+  deleteExamRequest,
+  duplicateExamRequest,
+  fetchExamsRequest,
+  type ExamRecord
+} from "../api/client";
+
+type HomeExam = ExamRecord & { status: "Draft" | "Published" | "Running" | "Completed" | "Archived" };
 
 /* ── Empty State ── */
 function EmptyState({ onCreate }: { onCreate: () => void }) {
@@ -81,16 +89,39 @@ function SyncBadge({ status }: { status: "progress" | "done" | "failed" }) {
 }
 
 /* ── Upcoming Exam Card ── */
-function UpcomingExamCard({ exam }: { exam: Exam }) {
+function UpcomingExamCard({
+  exam,
+  onDeleted,
+  onArchived,
+  onDuplicated
+}: {
+  exam: HomeExam;
+  onDeleted: (id: string) => void;
+  onArchived: (id: string) => void;
+  onDuplicated: (exam: HomeExam) => void;
+}) {
   const askConfirm = useAppStore((s) => s.askConfirm);
-  const deleteExam = useAppStore((s) => s.deleteExam);
-  const archiveExam = useAppStore((s) => s.archiveExam);
   const navigate = useNavigate();
 
   const menuItems = [
     { label: "Launch", icon: <IconPlus />, onClick: () => navigate("/launch") },
     { label: "Edit", icon: <IconEdit />, onClick: () => navigate("/exams/new") },
-    { label: "Duplicate", icon: <IconCopy />, onClick: () => {} },
+    {
+      label: "Duplicate",
+      icon: <IconCopy />,
+      onClick: async () => {
+        const duplicated = await duplicateExamRequest(exam.id);
+        onDuplicated(duplicated as HomeExam);
+      }
+    },
+    {
+      label: "Archive",
+      icon: <IconArchive />,
+      onClick: async () => {
+        await archiveExamRequest(exam.id);
+        onArchived(exam.id);
+      }
+    },
     { label: "", icon: undefined, divider: true, onClick: () => {}, danger: false },
     { label: "Delete", icon: <IconTrash />, danger: true, onClick: () =>
       askConfirm({
@@ -98,7 +129,10 @@ function UpcomingExamCard({ exam }: { exam: Exam }) {
         description: "This action cannot be undone. All exam data will be permanently removed.",
         confirmLabel: "Delete",
         tone: "danger" as const,
-        onConfirm: () => deleteExam(exam.id),
+        onConfirm: async () => {
+          await deleteExamRequest(exam.id);
+          onDeleted(exam.id);
+        },
       })
     },
   ];
@@ -121,9 +155,11 @@ function UpcomingExamCard({ exam }: { exam: Exam }) {
       <div className="home-card-divider" />
       <div className="home-card-footer row-between">
         <div className="row gap-3">
-          <span>98 students registered</span>
+          <span>{exam.rosterName ?? "No roster"}</span>
           <span style={{ color: "var(--border-default)" }}>•</span>
-          <span>{exam.questions.length} questions</span>
+          <span>{exam.rosterStudentCount ?? 0} students registered</span>
+          <span style={{ color: "var(--border-default)" }}>•</span>
+          <span>{exam.questionCount ?? 0} questions</span>
         </div>
         <button className="btn btn-primary btn-icon" onClick={() => navigate("/launch")}>
           <IconRocket />
@@ -134,16 +170,21 @@ function UpcomingExamCard({ exam }: { exam: Exam }) {
 }
 
 /* ── Recent Exam Card ── */
-function RecentExamCard({ exam }: { exam: Exam }) {
+function RecentExamCard({ exam, onDeleted, onDuplicated }: { exam: HomeExam; onDeleted: (id: string) => void; onDuplicated: (exam: HomeExam) => void }) {
   const askConfirm = useAppStore((s) => s.askConfirm);
-  const deleteExam = useAppStore((s) => s.deleteExam);
-  const archiveExam = useAppStore((s) => s.archiveExam);
   const navigate = useNavigate();
 
   // Results, Duplicate, Delete
   const menuItems = [
     { label: "Results", icon: <IconArchive />, onClick: () => navigate("/results") },
-    { label: "Duplicate", icon: <IconCopy />, onClick: () => {} },
+    {
+      label: "Duplicate",
+      icon: <IconCopy />,
+      onClick: async () => {
+        const duplicated = await duplicateExamRequest(exam.id);
+        onDuplicated(duplicated as HomeExam);
+      }
+    },
     { label: "", icon: undefined, divider: true, onClick: () => {}, danger: false },
     { label: "Delete", icon: <IconTrash />, danger: true, onClick: () =>
       askConfirm({
@@ -151,7 +192,10 @@ function RecentExamCard({ exam }: { exam: Exam }) {
         description: "This action cannot be undone. All exam data will be permanently removed.",
         confirmLabel: "Delete",
         tone: "danger" as const,
-        onConfirm: () => deleteExam(exam.id),
+        onConfirm: async () => {
+          await deleteExamRequest(exam.id);
+          onDeleted(exam.id);
+        },
       })
     },
   ];
@@ -160,10 +204,9 @@ function RecentExamCard({ exam }: { exam: Exam }) {
     ? new Date(exam.date).toLocaleDateString("en-US", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : new Date(exam.createdAt).toLocaleDateString("en-US", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-  // Mocking status to show different sync states
   let syncStatus: "progress" | "done" | "failed" = "done";
-  if (exam.status === "Archived") syncStatus = "failed";
-  else if (exam.status === "Running") syncStatus = "progress";
+  if (exam.syncStatus === "Pending" || exam.syncStatus === "Syncing") syncStatus = "progress";
+  if (exam.syncStatus === "Error" || exam.syncStatus === "Failed") syncStatus = "failed";
 
   return (
     <div className="home-card">
@@ -177,7 +220,7 @@ function RecentExamCard({ exam }: { exam: Exam }) {
       </div>
       <div className="home-card-divider" />
       <div className="row-between" style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
-        <span>198/200 students submitted</span>
+        <span>{exam.submittedCount ?? 0}/{exam.rosterStudentCount ?? 0} students submitted</span>
         <SyncBadge status={syncStatus} />
       </div>
     </div>
@@ -186,17 +229,40 @@ function RecentExamCard({ exam }: { exam: Exam }) {
 
 /* ── Sort/Filter Controls ── */
 type SortBy = "date" | "name" | "status";
-type FilterBy = "All" | Exam["status"];
+type FilterBy = "All" | HomeExam["status"];
 
 /* ── Home Page ── */
 export function HomePage() {
-  const exams = useAppStore((s) => s.exams);
   const lecturerName = useAppStore((s) => s.lecturerName);
   const navigate = useNavigate();
+  const [exams, setExams] = useState<HomeExam[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortBy>("date");
   const [filterBy, setFilterBy] = useState<FilterBy>("All");
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setLoadError("");
+    void fetchExamsRequest()
+      .then((items) => {
+        if (!mounted) return;
+        setExams(items as HomeExam[]);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        setLoadError(error instanceof Error ? error.message : "Failed to fetch exams.");
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     let list = [...exams];
@@ -208,7 +274,7 @@ export function HomePage() {
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
-        (e) => e.title.toLowerCase().includes(q) || e.courseCode.toLowerCase().includes(q)
+        (e) => e.title.toLowerCase().includes(q) || (e.courseCode ?? "").toLowerCase().includes(q)
       );
     }
 
@@ -242,6 +308,16 @@ export function HomePage() {
       </div>
 
       {!hasExams && <EmptyState onCreate={() => navigate("/exams/new")} />}
+      {loadError && (
+        <div className="card" style={{ marginBottom: "16px", color: "var(--color-error)" }}>
+          {loadError}
+        </div>
+      )}
+      {loading && (
+        <div className="card" style={{ marginBottom: "16px" }}>
+          Loading exams...
+        </div>
+      )}
 
       {hasExams && (
         <div className="stack gap-6">
@@ -294,10 +370,20 @@ export function HomePage() {
                     <div className="home-section-title">
                       Upcoming tests <span className="home-section-count">{upcomingExams.length}</span>
                     </div>
-                    <button className="home-section-see-all">See all</button>
+                    <button className="home-section-see-all" onClick={() => setFilterBy("All")}>See all</button>
                   </div>
                   <div className="grid-3">
-                    {upcomingExams.map(exam => <UpcomingExamCard key={exam.id} exam={exam} />)}
+                    {upcomingExams.map((exam) => (
+                      <UpcomingExamCard
+                        key={exam.id}
+                        exam={exam}
+                        onDeleted={(id) => setExams((prev) => prev.filter((e) => e.id !== id))}
+                        onArchived={(id) =>
+                          setExams((prev) => prev.map((e) => (e.id === id ? { ...e, status: "Archived" } : e)))
+                        }
+                        onDuplicated={(duplicated) => setExams((prev) => [duplicated, ...prev])}
+                      />
+                    ))}
                   </div>
                 </div>
               )}
@@ -309,10 +395,17 @@ export function HomePage() {
                     <div className="home-section-title">
                       Recent tests <span className="home-section-count">{recentExams.length}</span>
                     </div>
-                    <button className="home-section-see-all">See all</button>
+                    <button className="home-section-see-all" onClick={() => setFilterBy("All")}>See all</button>
                   </div>
                   <div className="grid-3">
-                    {recentExams.map(exam => <RecentExamCard key={exam.id} exam={exam} />)}
+                    {recentExams.map((exam) => (
+                      <RecentExamCard
+                        key={exam.id}
+                        exam={exam}
+                        onDeleted={(id) => setExams((prev) => prev.filter((e) => e.id !== id))}
+                        onDuplicated={(duplicated) => setExams((prev) => [duplicated, ...prev])}
+                      />
+                    ))}
                   </div>
                 </div>
               )}

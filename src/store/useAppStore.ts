@@ -17,6 +17,9 @@ import type {
 const now = () => new Date().toISOString();
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 
+// Temporary UI fixtures. Active lecturer flows should read/write through API
+// modules; these remain for routes that have not moved to the backend yet
+// and for unmounted reference screens under src/screens.
 const baseRosters: Roster[] = [
   {
     id: "roster_csc301",
@@ -182,18 +185,9 @@ type NewExamInput = {
   rosterId: string;
 };
 
-type AuthUser = {
-  id: string;
-  name: string;
-  email: string;
-  password: string;
-  createdAt: string;
-};
-
 type AppState = {
   isAuthenticated: boolean;
   currentUserId: string | null;
-  authUsers: AuthUser[];
   lecturerName: string;
   institution: string;
   department: string;
@@ -251,6 +245,7 @@ type AppState = {
   updateBankQuestion: (questionId: string, updates: Partial<Pick<Question, "text" | "options" | "correctAnswer" | "points">>) => void;
   addManualQuestion: (type: QuestionType) => void;
   setBuilderRosterId: (rosterId: string) => void;
+  setExamBuilderDraft: (updates: Partial<NewExamInput>) => void;
   publishBuilderExam: () => void;
 
   importRosterFromCsv: (name: string, csvText: string) => { created: boolean; duplicates: number; invalid: number };
@@ -277,8 +272,6 @@ type AppState = {
   closeConfirm: () => void;
   pushToast: (message: string, tone?: Toast["tone"]) => void;
   removeToast: (id: string) => void;
-  signUp: (name: string, email: string, password: string) => { ok: boolean; message: string };
-  logIn: (email: string, password: string) => { ok: boolean; message: string };
   logOut: () => void;
 };
 
@@ -287,7 +280,6 @@ export const useAppStore = create<AppState>()(
     (set, get) => ({
       isAuthenticated: false,
       currentUserId: null,
-      authUsers: [],
       lecturerName: "",
       institution: "",
       department: "",
@@ -405,6 +397,16 @@ export const useAppStore = create<AppState>()(
             draft: {
               ...state.examBuilder.draft,
               rosterId
+            }
+          }
+        })),
+      setExamBuilderDraft: (updates) =>
+        set((state) => ({
+          examBuilder: {
+            ...state.examBuilder,
+            draft: {
+              ...state.examBuilder.draft,
+              ...updates
             }
           }
         })),
@@ -628,46 +630,7 @@ export const useAppStore = create<AppState>()(
         const toast: Toast = { id: makeId("toast"), message, tone };
         set((state) => ({ toasts: [...state.toasts.slice(-2), toast] }));
       },
-      removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }))
-      ,
-      signUp: (name, email, password) => {
-        const cleanName = name.trim();
-        const cleanEmail = email.trim().toLowerCase();
-        if (!cleanName || !cleanEmail || !password.trim()) {
-          return { ok: false, message: "All fields are required." };
-        }
-        const exists = get().authUsers.some((u) => u.email === cleanEmail);
-        if (exists) {
-          return { ok: false, message: "An account with this email already exists." };
-        }
-        const user: AuthUser = {
-          id: makeId("usr"),
-          name: cleanName,
-          email: cleanEmail,
-          password,
-          createdAt: now()
-        };
-        set((state) => ({
-          authUsers: [user, ...state.authUsers],
-          isAuthenticated: true,
-          currentUserId: user.id,
-          lecturerName: cleanName
-        }));
-        return { ok: true, message: "Account created successfully." };
-      },
-      logIn: (email, password) => {
-        const cleanEmail = email.trim().toLowerCase();
-        const user = get().authUsers.find((u) => u.email === cleanEmail && u.password === password);
-        if (!user) {
-          return { ok: false, message: "Invalid email or password." };
-        }
-        set({
-          isAuthenticated: true,
-          currentUserId: user.id,
-          lecturerName: user.name
-        });
-        return { ok: true, message: "Login successful." };
-      },
+      removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
       logOut: () => {
         set({
           isAuthenticated: false,
@@ -684,26 +647,32 @@ export const useAppStore = create<AppState>()(
       name: "mudu-app-state-v3",
       merge: (persistedState, currentState) => {
         const persisted = (persistedState as Partial<AppState>) ?? {};
-        const merged = { ...currentState, ...persisted };
-        const currentExams = Array.isArray(persisted.exams) ? persisted.exams : currentState.exams;
-        const hasMockExam = currentExams.some((exam) => exam.id === "exam_mock_objective_30");
         return {
-          ...merged,
-          exams: hasMockExam ? currentExams : [seedExams[2], ...currentExams]
+          ...currentState,
+          lecturerName: typeof persisted.lecturerName === "string" ? persisted.lecturerName : currentState.lecturerName,
+          isAuthenticated: typeof persisted.isAuthenticated === "boolean" ? persisted.isAuthenticated : currentState.isAuthenticated,
+          currentUserId: typeof persisted.currentUserId === "string" || persisted.currentUserId === null
+            ? persisted.currentUserId
+            : currentState.currentUserId,
+          institution: typeof persisted.institution === "string" ? persisted.institution : currentState.institution,
+          department: typeof persisted.department === "string" ? persisted.department : currentState.department,
+          onboardingComplete: typeof persisted.onboardingComplete === "boolean"
+            ? persisted.onboardingComplete
+            : currentState.onboardingComplete,
+          onboardingStep: typeof persisted.onboardingStep === "number" ? persisted.onboardingStep : currentState.onboardingStep,
+          sidebarCollapsed: typeof persisted.sidebarCollapsed === "boolean"
+            ? persisted.sidebarCollapsed
+            : currentState.sidebarCollapsed
         };
       },
       partialize: (state) => ({
         lecturerName: state.lecturerName,
         isAuthenticated: state.isAuthenticated,
         currentUserId: state.currentUserId,
-        authUsers: state.authUsers,
         institution: state.institution,
         department: state.department,
         onboardingComplete: state.onboardingComplete,
         onboardingStep: state.onboardingStep,
-        exams: state.exams,
-        rosters: state.rosters,
-        syncItems: state.syncItems,
         sidebarCollapsed: state.sidebarCollapsed
       })
     }

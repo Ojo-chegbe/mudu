@@ -3,10 +3,22 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { IconUpload, IconCheck, IconTrash, IconPlus } from "../components/Icons";
 import { useAppStore } from "../store/useAppStore";
 import type { QuestionType } from "../types";
+import {
+  createExamQuestionRequest,
+  createExamRequest,
+  deleteQuestionRequest,
+  fetchRosters,
+  generateAiQuestionsFromTextRequest,
+  publishExamRequest,
+  updateExamRequest,
+  updateQuestionRequest,
+  type RosterRecord
+} from "../api/client";
 
 /* ── Local question type for the editor ── */
 type EditorQuestion = {
   id: string;
+  backendId?: string;
   type: QuestionType;
   text: string;
   options: string[];
@@ -233,14 +245,16 @@ function QuestionEditorCard({
 }
 
 /* ── Step 2: Question Creation ── */
-function StepQuestions({ onBack, onNext, questions, setQuestions }: {
+function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
   onBack: () => void;
   onNext: () => void;
   questions: EditorQuestion[];
   setQuestions: React.Dispatch<React.SetStateAction<EditorQuestion[]>>;
+  examId: string | null;
 }) {
   const sourceMode = useAppStore((s) => s.examBuilder.sourceMode);
   const setSourceMode = useAppStore((s) => s.setSourceMode);
+  const pushToast = useAppStore((s) => s.pushToast);
   const [pasteText, setPasteText] = useState("");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [generating, setGenerating] = useState(false);
@@ -300,40 +314,92 @@ function StepQuestions({ onBack, onNext, questions, setQuestions }: {
     { key: "bank" as const, label: "Question bank", desc: "Pull from your saved question bank" },
   ];
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
+    if (!examId) {
+      pushToast("Create exam details first before AI generation.", "error");
+      return;
+    }
+
+    const sourceText = sourceMode === "paste"
+      ? pasteText.trim()
+      : "Uploaded source document content provided by lecturer.";
+
+    if (!sourceText) {
+      pushToast("Provide source text before generation.", "error");
+      return;
+    }
+
     setGenerating(true);
-    setTimeout(() => {
-      // Simulate AI generating questions
-      const generated: EditorQuestion[] = Array.from({ length: 5 }, (_, i) => ({
+    try {
+      const payload = await generateAiQuestionsFromTextRequest({
+        examId,
+        sourceText,
+        count: 5
+      });
+
+      const generated: EditorQuestion[] = payload.questions.map((q) => ({
         id: makeId(),
-        type: (i % 3 === 0 ? "ESSAY" : i % 2 === 0 ? "FILL" : "MCQ") as QuestionType,
-        text: `Generated question ${i + 1} from AI`,
-        options: i % 2 !== 0 ? [] : ["Option A", "Option B", "Option C", "Option D"],
-        correctAnswer: i % 2 !== 0 ? "" : "Option A",
-        points: i % 3 === 0 ? 5 : 1,
+        backendId: q.id,
+        type: q.type,
+        text: q.text,
+        options: q.options,
+        correctAnswer: q.correctAnswer,
+        points: q.points
       }));
       applyQuestions(generated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI generation failed.";
+      pushToast(message, "error");
+    } finally {
       setGenerating(false);
-    }, 1500);
+    }
   };
 
-  const addQuestion = (type: QuestionType) => {
+  const addQuestion = async (type: QuestionType) => {
     const q = newQuestion(type);
     applyQuestions([...questions, q]);
     setActiveCardId(q.id);
-    // Scroll to the new question after render
     setTimeout(() => {
       document.getElementById(`qe-${q.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 50);
+
+    if (!examId) return;
+    try {
+      const created = await createExamQuestionRequest(examId, {
+        type: q.type,
+        text: "New question",
+        options: q.options,
+        correctAnswer: q.correctAnswer,
+        points: q.points,
+        status: "Approved",
+        orderIndex: questions.length
+      });
+      setQuestions((prev) => prev.map((item) => (item.id === q.id ? { ...item, backendId: created.id, text: "" } : item)));
+    } catch {
+      // Keep editor usable if backend question create fails.
+    }
   };
 
   const updateQuestion = (id: string, updated: EditorQuestion) => {
     applyQuestions(questions.map(q => q.id === id ? updated : q));
+    if (updated.backendId) {
+      void updateQuestionRequest(updated.backendId, {
+        text: updated.text,
+        options: updated.options,
+        correctAnswer: updated.correctAnswer,
+        points: updated.points,
+        orderIndex: questions.findIndex((q) => q.id === id)
+      });
+    }
   };
 
   const deleteQuestion = (id: string) => {
+    const target = questions.find((q) => q.id === id);
     applyQuestions(questions.filter(q => q.id !== id));
     if (activeCardId === id) setActiveCardId(null);
+    if (target?.backendId) {
+      void deleteQuestionRequest(target.backendId);
+    }
   };
 
   return (
@@ -462,9 +528,9 @@ function StepQuestions({ onBack, onNext, questions, setQuestions }: {
           {/* Add question bar */}
           <div className="qe-add-bar">
             <span style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>Add a question:</span>
-            <button className="btn btn-secondary btn-sm" onClick={() => addQuestion("MCQ")}>+ Multiple Choice</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => addQuestion("FILL")}>+ Fill in Blank</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => addQuestion("ESSAY")}>+ Essay</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => void addQuestion("MCQ")}>+ Multiple Choice</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => void addQuestion("FILL")}>+ Fill in Blank</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => void addQuestion("ESSAY")}>+ Essay</button>
           </div>
         </div>
       )}
@@ -481,14 +547,45 @@ function StepQuestions({ onBack, onNext, questions, setQuestions }: {
 }
 
 /* ── Step 3: Students & Publish ── */
-function StepPublish({ title, course, duration, questionCount, onBack }: { title: string; course: string; duration: number; questionCount: number; onBack: () => void }) {
-  const publishBuilderExam = useAppStore((s) => s.publishBuilderExam);
-  const setBuilderRosterId = useAppStore((s) => s.setBuilderRosterId);
-  const rosters = useAppStore((s) => s.rosters);
+function StepPublish({
+  title,
+  course,
+  duration,
+  questionCount,
+  onBack,
+  examId,
+  onRosterChanged
+}: {
+  title: string;
+  course: string;
+  duration: number;
+  questionCount: number;
+  onBack: () => void;
+  examId: string | null;
+  onRosterChanged: (rosterId: string) => void;
+}) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [rosters, setRosters] = useState<RosterRecord[]>([]);
+  const [loadingRosters, setLoadingRosters] = useState(false);
   const [rosterId, setRosterId] = useState(rosters[0]?.id ?? "");
   const selectedRoster = rosters.find((r) => r.id === rosterId) ?? null;
+
+  useEffect(() => {
+    let mounted = true;
+    setLoadingRosters(true);
+    void fetchRosters()
+      .then((items) => {
+        if (!mounted) return;
+        setRosters(items);
+      })
+      .finally(() => {
+        if (mounted) setLoadingRosters(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const createdRosterId = searchParams.get("rosterId");
@@ -501,11 +598,10 @@ function StepPublish({ title, course, duration, questionCount, onBack }: { title
     }
   }, [searchParams, rosters, rosterId]);
 
-  const handlePublish = () => {
-    if (rosterId) {
-      setBuilderRosterId(rosterId);
-    }
-    publishBuilderExam();
+  const handlePublish = async () => {
+    if (!examId || !rosterId) return;
+    await updateExamRequest(examId, { rosterId });
+    await publishExamRequest(examId);
     navigate("/");
   };
 
@@ -520,7 +616,16 @@ function StepPublish({ title, course, duration, questionCount, onBack }: { title
       <div className="form-group">
         <label className="form-label">Linked Roster</label>
         <div className="row gap-2">
-          <select className="form-select" style={{ flex: 1 }} value={rosterId} onChange={(e) => setRosterId(e.target.value)}>
+          <select
+            className="form-select"
+            style={{ flex: 1 }}
+            value={rosterId}
+            disabled={loadingRosters}
+            onChange={(e) => {
+              setRosterId(e.target.value);
+              onRosterChanged(e.target.value);
+            }}
+          >
             {rosters.map((r) => <option key={r.id} value={r.id}>{r.name} ({r.students.length} students)</option>)}
             {rosters.length === 0 && <option value="">No rosters yet</option>}
           </select>
@@ -575,10 +680,19 @@ function StepPublish({ title, course, duration, questionCount, onBack }: { title
 /* ── Main Export ── */
 export function ExamCreatePage() {
   const [searchParams] = useSearchParams();
+  const draft = useAppStore((s) => s.examBuilder.draft);
+  const setExamBuilderDraft = useAppStore((s) => s.setExamBuilderDraft);
   const [step, setStep] = useState(1);
-  const createDraftExam = useAppStore((s) => s.createDraftExam);
-  const [details, setDetails] = useState({ title: "", courseCode: "", date: "", durationMinutes: 60, passingScore: 50, rosterId: "" });
+  const [details, setDetails] = useState({
+    title: draft.title ?? "",
+    courseCode: draft.courseCode ?? "",
+    date: draft.date ?? "",
+    durationMinutes: draft.durationMinutes ?? 60,
+    passingScore: draft.passingScore ?? 50,
+    rosterId: draft.rosterId ?? ""
+  });
   const [questions, setQuestions] = useState<EditorQuestion[]>([]);
+  const [examId, setExamId] = useState<string | null>(null);
 
   const stepTitles = ["Fill in the details", "Create Questions", "Add Students"];
 
@@ -604,14 +718,50 @@ export function ExamCreatePage() {
         <StepIndicator current={step} />
       </div>
 
-      {step === 1 && <StepDetails onNext={(data) => {
-        const updatedDetails = { ...details, ...data };
+      {step === 1 && <StepDetails onNext={async (data) => {
+        const rosterList = await fetchRosters();
+        const primaryRosterId = rosterList[0]?.id ?? "";
+        const updatedDetails = { ...details, ...data, rosterId: primaryRosterId };
         setDetails(updatedDetails);
-        createDraftExam(updatedDetails);
+        setExamBuilderDraft(updatedDetails);
+
+        if (examId) {
+          await updateExamRequest(examId, updatedDetails);
+          setStep(2);
+          return;
+        }
+
+        if (!primaryRosterId) {
+          return;
+        }
+
+        const created = await createExamRequest({
+          title: updatedDetails.title,
+          courseCode: updatedDetails.courseCode,
+          date: updatedDetails.date,
+          durationMinutes: updatedDetails.durationMinutes,
+          passingScore: updatedDetails.passingScore,
+          rosterId: primaryRosterId,
+          status: "Draft"
+        });
+        setExamId(created.id);
         setStep(2);
       }} />}
-      {step === 2 && <StepQuestions onBack={() => setStep(1)} onNext={() => setStep(3)} questions={questions} setQuestions={setQuestions} />}
-      {step === 3 && <StepPublish title={details.title} course={details.courseCode} duration={details.durationMinutes} questionCount={questions.length} onBack={() => setStep(2)} />}
+      {step === 2 && <StepQuestions onBack={() => setStep(1)} onNext={() => setStep(3)} questions={questions} setQuestions={setQuestions} examId={examId} />}
+      {step === 3 && (
+        <StepPublish
+          title={details.title}
+          course={details.courseCode}
+          duration={details.durationMinutes}
+          questionCount={questions.length}
+          onBack={() => setStep(2)}
+          examId={examId}
+          onRosterChanged={(rosterId) => {
+            setDetails((prev) => ({ ...prev, rosterId }));
+            setExamBuilderDraft({ rosterId });
+          }}
+        />
+      )}
     </div>
   );
 }

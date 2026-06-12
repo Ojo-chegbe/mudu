@@ -1,20 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { IconSearch, IconPlus } from "../components/Icons";
-import { useAppStore } from "../store/useAppStore";
-import type { Exam } from "../types";
+import { fetchExamsRequest, fetchRosters, type ExamRecord, type RosterRecord } from "../api/client";
 
 /* ── Build courses from exams ── */
 type Course = {
   code: string;
-  exams: Exam[];
+  exams: ExamRecord[];
   totalQuestions: number;
   students: number;
   lastActivity: string;
 };
 
-function buildCourses(exams: Exam[], rosters: ReturnType<typeof useAppStore.getState>["rosters"]): Course[] {
-  const map = new Map<string, Exam[]>();
+function buildCourses(exams: ExamRecord[], rosters: RosterRecord[]): Course[] {
+  const map = new Map<string, ExamRecord[]>();
   for (const exam of exams) {
     const code = exam.courseCode || "Uncategorized";
     if (!map.has(code)) map.set(code, []);
@@ -22,7 +21,7 @@ function buildCourses(exams: Exam[], rosters: ReturnType<typeof useAppStore.getS
   }
 
   return Array.from(map.entries()).map(([code, courseExams]) => {
-    const totalQuestions = courseExams.reduce((sum, e) => sum + e.questions.length, 0);
+    const totalQuestions = courseExams.reduce((sum, e) => sum + (e.questionCount ?? 0), 0);
     const rosterIds = new Set(courseExams.map(e => e.rosterId));
     const students = rosters.filter(r => rosterIds.has(r.id)).reduce((sum, r) => sum + r.students.length, 0);
     const lastActivity = courseExams
@@ -35,10 +34,10 @@ function buildCourses(exams: Exam[], rosters: ReturnType<typeof useAppStore.getS
 }
 
 /* ── Status pill ── */
-function StatusPill({ status }: { status: Exam["status"] }) {
+function StatusPill({ status }: { status: ExamRecord["status"] }) {
   const cls = status === "Draft" ? "badge-draft"
     : status === "Published" ? "badge-info"
-    : status === "Running" ? "badge-success"
+    : status === "Running" || status === "Active" ? "badge-success"
     : status === "Completed" ? "badge-neutral"
     : "badge-warning";
   return <span className={`badge ${cls}`}>{status}</span>;
@@ -157,7 +156,7 @@ function CourseDetail({ course, onBack }: { course: Course; onBack: () => void }
                   <td style={{ fontWeight: 500 }}>{exam.title}</td>
                   <td>{formattedDate}</td>
                   <td>{exam.durationMinutes} min</td>
-                  <td>{exam.questions.length}</td>
+                  <td>{exam.questionCount ?? 0}</td>
                   <td><StatusPill status={exam.status} /></td>
                 </tr>
               );
@@ -171,11 +170,39 @@ function CourseDetail({ course, onBack }: { course: Course; onBack: () => void }
 
 /* ── Main Export ── */
 export function CoursesPage() {
-  const exams = useAppStore((s) => s.exams);
-  const rosters = useAppStore((s) => s.rosters);
   const navigate = useNavigate();
+  const [exams, setExams] = useState<ExamRecord[]>([]);
+  const [rosters, setRosters] = useState<RosterRecord[]>([]);
   const [search, setSearch] = useState("");
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadCourses() {
+      try {
+        setLoading(true);
+        const [examList, rosterList] = await Promise.all([fetchExamsRequest(), fetchRosters()]);
+        if (!mounted) return;
+        setExams(examList);
+        setRosters(rosterList);
+        setLoadError("");
+      } catch (error) {
+        if (!mounted) return;
+        setLoadError(error instanceof Error ? error.message : "Failed to load courses.");
+      } finally {
+        if (!mounted) return;
+        setLoading(false);
+      }
+    }
+
+    void loadCourses();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const courses = buildCourses(exams, rosters);
   const filtered = search.trim()
@@ -202,6 +229,10 @@ export function CoursesPage() {
         </button>
       </div>
 
+      {loadError ? (
+        <div className="badge badge-error" style={{ whiteSpace: "normal" }}>{loadError}</div>
+      ) : null}
+
       {/* Search */}
       <div className="search-box" style={{ maxWidth: "360px" }}>
         <IconSearch />
@@ -213,7 +244,11 @@ export function CoursesPage() {
       </div>
 
       {/* Course grid */}
-      {filtered.length > 0 ? (
+      {loading ? (
+        <div className="card" style={{ textAlign: "center", padding: "var(--sp-10)", color: "var(--text-tertiary)" }}>
+          Loading courses...
+        </div>
+      ) : filtered.length > 0 ? (
         <div className="grid-3">
           {filtered.map(course => (
             <CourseCard key={course.code} course={course} onSelect={() => setSelectedCode(course.code)} />

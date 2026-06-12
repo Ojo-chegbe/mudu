@@ -1,5 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  fetchDashboardRequest,
+  fetchExamSessionsRequest,
+  fetchExamsRequest,
+  fetchSyncStatusRequest,
+  type ExamRecord,
+  type ExamSessionRecord,
+  type SyncStatusRecord
+} from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
 type NotificationItem = {
@@ -20,39 +29,83 @@ function toneBadge(tone: NotificationItem["tone"]) {
 
 export function NotificationsPage() {
   const navigate = useNavigate();
-  const exams = useAppStore((s) => s.exams);
-  const sessions = useAppStore((s) => s.sessions);
-  const syncItems = useAppStore((s) => s.syncItems);
   const toasts = useAppStore((s) => s.toasts);
 
   const [filter, setFilter] = useState<"All" | "Action Needed" | "Updates">("All");
   const [dismissedIds, setDismissedIds] = useState<string[]>([]);
+  const [exams, setExams] = useState<ExamRecord[]>([]);
+  const [sessions, setSessions] = useState<ExamSessionRecord[]>([]);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusRecord | null>(null);
+  const [unsyncedCount, setUnsyncedCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadNotifications() {
+      try {
+        setLoading(true);
+        const [dashboard, sync, examList] = await Promise.all([
+          fetchDashboardRequest(),
+          fetchSyncStatusRequest(),
+          fetchExamsRequest()
+        ]);
+        const runningExams = examList.filter((exam) => exam.status === "Running" || exam.status === "Active");
+        const sessionList = (
+          await Promise.all(
+            runningExams.map((exam) =>
+              fetchExamSessionsRequest(exam.id).catch(() => [])
+            )
+          )
+        ).flat();
+        const unsyncedMetric = dashboard.metrics.find((metric) => metric.label === "Unsynced Exams");
+
+        if (!mounted) return;
+        setExams(examList);
+        setSessions(sessionList);
+        setSyncStatus(sync);
+        setUnsyncedCount(Number(unsyncedMetric?.value ?? 0));
+        setLoadError("");
+      } catch (error) {
+        if (!mounted) return;
+        setLoadError(error instanceof Error ? error.message : "Failed to load notifications.");
+      } finally {
+        if (!mounted) return;
+        setLoading(false);
+      }
+    }
+
+    void loadNotifications();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const notifications = useMemo<NotificationItem[]>(() => {
     const list: NotificationItem[] = [];
 
-    syncItems.forEach((item) => {
-      if (item.status === "Error") {
-        list.push({
-          id: `sync-error-${item.id}`,
-          title: "Sync Failed",
-          message: `${item.examTitle} failed to sync${item.error ? `: ${item.error}` : "."}`,
-          tone: "error",
-          actionLabel: "Open Results",
-          actionTo: "/results"
-        });
-      }
-      if (item.status === "Pending") {
-        list.push({
-          id: `sync-pending-${item.id}`,
-          title: "Pending Sync",
-          message: `${item.examTitle} is waiting to sync.`,
-          tone: "warning",
-          actionLabel: "Open Results",
-          actionTo: "/results"
-        });
-      }
-    });
+    if (syncStatus?.cloudSyncDeferred) {
+      list.push({
+        id: "sync-deferred",
+        title: "Cloud Sync Deferred",
+        message: "Cloud sync is paused while local exam activity is active.",
+        tone: "warning",
+        actionLabel: "Open Settings",
+        actionTo: "/settings"
+      });
+    }
+
+    if (unsyncedCount > 0) {
+      list.push({
+        id: "unsynced-items",
+        title: "Pending Sync",
+        message: `${unsyncedCount} item(s) are waiting to sync.`,
+        tone: "warning",
+        actionLabel: "Open Results",
+        actionTo: "/results"
+      });
+    }
 
     const flagged = sessions.filter((s) => s.flags > 0);
     if (flagged.length > 0) {
@@ -99,7 +152,7 @@ export function NotificationsPage() {
     list.push(...recentToast);
 
     return list;
-  }, [exams, sessions, syncItems, toasts]);
+  }, [exams, sessions, syncStatus, toasts, unsyncedCount]);
 
   const filtered = notifications
     .filter((n) => !dismissedIds.includes(n.id))
@@ -127,7 +180,13 @@ export function NotificationsPage() {
       </div>
 
       <div className="card">
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div style={{ textAlign: "center", padding: "32px 16px", color: "var(--text-tertiary)" }}>
+            Loading notifications...
+          </div>
+        ) : loadError ? (
+          <div className="badge badge-error" style={{ whiteSpace: "normal" }}>{loadError}</div>
+        ) : filtered.length === 0 ? (
           <div style={{ textAlign: "center", padding: "32px 16px" }}>
             <h3 style={{ fontSize: "16px", fontWeight: 600, marginBottom: "6px" }}>No notifications</h3>
             <p style={{ color: "var(--text-tertiary)" }}>You're all caught up.</p>

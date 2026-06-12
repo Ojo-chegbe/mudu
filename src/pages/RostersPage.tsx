@@ -1,5 +1,18 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  addRosterStudentRequest,
+  confirmRosterRegistrationsRequest,
+  createRosterRegistrationLinkRequest,
+  createRosterRequest,
+  deleteRosterRequest,
+  deleteRosterStudentRequest,
+  fetchRosters,
+  importRosterCsvRequest,
+  updateRosterRequest,
+  updateRosterStudentRequest,
+  type RosterRecord
+} from "../api/client";
 import { DropdownMenu } from "../components/DropdownMenu";
 import { IconPlus, IconEdit, IconTrash, IconDownload, IconCopy, IconUpload } from "../components/Icons";
 import { useAppStore } from "../store/useAppStore";
@@ -7,10 +20,8 @@ import { useAppStore } from "../store/useAppStore";
 export function RostersPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const rosters = useAppStore((s) => s.rosters);
-  const importCsv = useAppStore((s) => s.importRosterFromCsv);
-  const createRoster = useAppStore((s) => s.createRoster);
-  const addStudent = useAppStore((s) => s.addManualStudent);
+  const [rosters, setRosters] = useState<RosterRecord[]>([]);
+  const [loadingRosters, setLoadingRosters] = useState(true);
   const pushToast = useAppStore((s) => s.pushToast);
 
   const [view, setView] = useState<"list" | "create" | "detail">("list");
@@ -21,11 +32,11 @@ export function RostersPage() {
   const [activeRosterId, setActiveRosterId] = useState<string | null>(null);
   const [csv, setCsv] = useState("");
   const [csvFileName, setCsvFileName] = useState("");
-  const [selectedId, setSelectedId] = useState(rosters[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState("");
   const [matric, setMatric] = useState("");
   const [studentName, setStudentName] = useState("");
   const [importResult, setImportResult] = useState<{ duplicates: number; invalid: number } | null>(null);
-  const [registrationToken] = useState(() => crypto.randomUUID().slice(0, 8));
+  const [registrationLink, setRegistrationLink] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fromExamCreate = searchParams.get("from") === "exam-create";
@@ -34,10 +45,39 @@ export function RostersPage() {
   const activeRoster = rosters.find((r) => r.id === activeRosterId) ?? null;
 
   useEffect(() => {
+    if (method !== "self" || !activeRosterId) return;
+    void createRosterRegistrationLinkRequest(activeRosterId)
+      .then((result) => setRegistrationLink(result.link))
+      .catch((err) => pushToast(err instanceof Error ? err.message : "Failed to create registration link.", "error"));
+  }, [method, activeRosterId]);
+
+  const loadRosters = async () => {
+    try {
+      setLoadingRosters(true);
+      const items = await fetchRosters();
+      setRosters(items);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to load rosters.", "error");
+    } finally {
+      setLoadingRosters(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadRosters();
+  }, []);
+
+  useEffect(() => {
     if (searchParams.get("mode") === "create") {
       setShowCreateModal(true);
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    if (!selectedId && rosters[0]?.id) {
+      setSelectedId(rosters[0].id);
+    }
+  }, [rosters, selectedId]);
 
   const navigateBackToExamCreate = (createdRosterId: string) => {
     const target = returnTo ?? "/exams/new?step=3";
@@ -51,80 +91,60 @@ export function RostersPage() {
     setShowCreateModal(true);
   };
 
-  const createRosterAndContinue = () => {
-    const createdId = createRoster(rosterName, rosterDescription);
-    if (!createdId) {
+  const createRosterAndContinue = async () => {
+    const cleanName = rosterName.trim();
+    if (!cleanName) {
       pushToast("Roster name is required.", "warning");
       return;
     }
-    setActiveRosterId(createdId);
-    setSelectedId(createdId);
+
+    try {
+      const created = await createRosterRequest({
+        name: cleanName,
+        description: rosterDescription.trim()
+      });
+      await loadRosters();
+      setActiveRosterId(created.id);
+      setSelectedId(created.id);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to create roster.", "error");
+      return;
+    }
+
     setMethod("csv");
     setView("create");
     setShowCreateModal(false);
     pushToast("Roster created. Choose how to add students.", "success");
   };
 
-  const importIntoExistingRoster = (rosterId: string, csvText: string) => {
-    const lines = csvText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (lines.length < 2) {
-      return { created: false, duplicates: 0, invalid: 0 };
-    }
-    const target = useAppStore.getState().rosters.find((r) => r.id === rosterId);
-    if (!target) {
-      return { created: false, duplicates: 0, invalid: 0 };
-    }
-
-    const existing = new Set(target.students.map((s) => s.matric.toLowerCase()));
-    let duplicates = 0;
-    let invalid = 0;
-    let added = 0;
-
-    for (let i = 1; i < lines.length; i += 1) {
-      const [matricRaw, nameRaw] = lines[i].split(",");
-      const matricValue = (matricRaw ?? "").trim();
-      const studentValue = (nameRaw ?? "").trim();
-      if (!matricValue || !studentValue) {
-        invalid += 1;
-        continue;
-      }
-      const key = matricValue.toLowerCase();
-      if (existing.has(key)) {
-        duplicates += 1;
-        continue;
-      }
-      existing.add(key);
-      addStudent(rosterId, matricValue, studentValue);
-      added += 1;
-    }
-
-    return { created: added > 0, duplicates, invalid };
-  };
-
-  const handleImport = () => {
+  const handleImport = async () => {
     if (!csv.trim()) {
       pushToast("Upload a CSV file before importing.", "warning");
       return;
     }
 
-    const result = activeRosterId
-      ? importIntoExistingRoster(activeRosterId, csv)
-      : importCsv(rosterName, csv);
+    if (!activeRosterId) {
+      pushToast("Create a roster first.", "warning");
+      return;
+    }
 
-    if (result.created) {
-      pushToast("Students imported successfully.", "success");
-      if (fromExamCreate && activeRosterId) {
-        navigateBackToExamCreate(activeRosterId);
-        return;
-      }
-      if (activeRosterId) {
+    try {
+      const result = await importRosterCsvRequest(activeRosterId, csv);
+      await loadRosters();
+      setImportResult({ duplicates: result.duplicates, invalid: result.invalid });
+      if (result.created > 0) {
+        pushToast("Students imported successfully.", "success");
+        if (fromExamCreate) {
+          navigateBackToExamCreate(activeRosterId);
+          return;
+        }
         setSelectedId(activeRosterId);
         setView("detail");
-        return;
+      } else {
+        pushToast("No new students imported.", "warning");
       }
-      setView("list");
-    } else {
-      setImportResult({ duplicates: result.duplicates, invalid: result.invalid });
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Import failed.", "error");
     }
   };
 
@@ -140,6 +160,94 @@ export function RostersPage() {
     setCsv(content);
     setCsvFileName(file.name);
     setImportResult(null);
+  };
+
+  const handleDuplicateRoster = async (roster: RosterRecord) => {
+    try {
+      const duplicated = await createRosterRequest({
+        name: `${roster.name} (Copy)`,
+        description: roster.description ?? "",
+        courseCode: roster.courseCode ?? ""
+      });
+
+      const copyStudents = roster.students.map((student) =>
+        addRosterStudentRequest(duplicated.id, {
+          matric: student.matric,
+          name: student.name
+        })
+      );
+      await Promise.allSettled(copyStudents);
+      await loadRosters();
+      pushToast("Roster duplicated.", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to duplicate roster.", "error");
+    }
+  };
+
+  const exportRosterCsv = (roster: RosterRecord) => {
+    const header = "matric,name";
+    const rows = roster.students.map((s) => `${s.matric},${s.name.replace(/,/g, " ")}`);
+    const csvText = [header, ...rows].join("\n");
+    const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${roster.name.replace(/[^a-z0-9-_ ]/gi, "_")}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const renameRoster = async (roster: RosterRecord) => {
+    const nextName = window.prompt("Enter new roster name", roster.name)?.trim();
+    if (!nextName || nextName === roster.name) return;
+    try {
+      await updateRosterRequest(roster.id, { name: nextName });
+      await loadRosters();
+      pushToast("Roster name updated.", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to update roster.", "error");
+    }
+  };
+
+  const removeRoster = async (roster: RosterRecord) => {
+    const confirmed = window.confirm(`Delete "${roster.name}"? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await deleteRosterRequest(roster.id);
+      await loadRosters();
+      if (selectedId === roster.id) {
+        setSelectedId("");
+      }
+      pushToast("Roster deleted.", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to delete roster.", "error");
+    }
+  };
+
+  const editStudent = async (studentId: string, currentMatric: string, currentName: string) => {
+    const nextMatric = window.prompt("Edit matric number", currentMatric)?.trim();
+    if (!nextMatric) return;
+    const nextName = window.prompt("Edit student name", currentName)?.trim();
+    if (!nextName) return;
+    try {
+      await updateRosterStudentRequest(studentId, { matric: nextMatric, name: nextName });
+      await loadRosters();
+      pushToast("Student updated.", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to update student.", "error");
+    }
+  };
+
+  const removeStudent = async (studentId: string, name: string) => {
+    const confirmed = window.confirm(`Remove "${name}" from this roster?`);
+    if (!confirmed) return;
+    try {
+      await deleteRosterStudentRequest(studentId);
+      await loadRosters();
+      pushToast("Student removed.", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to remove student.", "error");
+    }
   };
 
   return (
@@ -175,7 +283,11 @@ export function RostersPage() {
 
       {view === "list" && (
         <>
-          {rosters.length === 0 ? (
+          {loadingRosters ? (
+            <div className="card" style={{ textAlign: "center", padding: "48px" }}>
+              <p style={{ color: "var(--text-tertiary)" }}>Loading rosters...</p>
+            </div>
+          ) : rosters.length === 0 ? (
             <div className="card" style={{ textAlign: "center", padding: "48px" }}>
               <h3 style={{ fontSize: "18px", fontWeight: 600, marginBottom: "8px" }}>No rosters yet</h3>
               <p style={{ color: "var(--text-tertiary)", marginBottom: "16px" }}>Create a roster to manage your students.</p>
@@ -197,11 +309,11 @@ export function RostersPage() {
                     </div>
                     <div className="row gap-2" onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu items={[
-                        { label: "Edit name", icon: <IconEdit />, onClick: () => {} },
-                        { label: "Duplicate", icon: <IconCopy />, onClick: () => {} },
-                        { label: "Export CSV", icon: <IconDownload />, onClick: () => {} },
+                        { label: "Edit name", icon: <IconEdit />, onClick: () => void renameRoster(roster) },
+                        { label: "Duplicate", icon: <IconCopy />, onClick: () => void handleDuplicateRoster(roster) },
+                        { label: "Export CSV", icon: <IconDownload />, onClick: () => exportRosterCsv(roster) },
                         { label: "", divider: true, onClick: () => {} },
-                        { label: "Delete", icon: <IconTrash />, danger: true, onClick: () => {} },
+                        { label: "Delete", icon: <IconTrash />, danger: true, onClick: () => void removeRoster(roster) },
                       ]} />
                     </div>
                   </div>
@@ -271,11 +383,20 @@ export function RostersPage() {
             <div className="card stack gap-3">
               <div className="connection-box">
                 <div style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>Share this link with students</div>
-                <div className="connection-ip" style={{ fontSize: "20px" }}>{`http://mudu.local/register/${registrationToken}`}</div>
+                <div className="connection-ip" style={{ fontSize: "20px" }}>{registrationLink || "Generating registration link..."}</div>
               </div>
               <div className="row gap-2" style={{ justifyContent: "center" }}>
-                <button className="btn btn-secondary">Copy Link</button>
-                <button className="btn btn-secondary">Share via WhatsApp</button>
+                <button className="btn btn-secondary" onClick={async () => {
+                  const link = registrationLink;
+                  if (!link) return;
+                  await navigator.clipboard.writeText(link);
+                  pushToast("Registration link copied.", "success");
+                }}>Copy Link</button>
+                <button className="btn btn-secondary" onClick={() => {
+                  const link = registrationLink;
+                  if (!link) return;
+                  window.open(`https://wa.me/?text=${encodeURIComponent(`Join roster: ${link}`)}`, "_blank", "noopener,noreferrer");
+                }}>Share via WhatsApp</button>
               </div>
               {fromExamCreate && (
                 <button className="btn btn-primary" onClick={() => {
@@ -306,13 +427,32 @@ export function RostersPage() {
             <div className="row gap-2">
               <input className="form-input" style={{ flex: 1 }} placeholder="Matric number" value={matric} onChange={(e) => setMatric(e.target.value)} />
               <input className="form-input" style={{ flex: 1 }} placeholder="Full name" value={studentName} onChange={(e) => setStudentName(e.target.value)} />
-              <button className="btn btn-primary" onClick={() => {
+              <button className="btn btn-primary" onClick={async () => {
                 if (!matric || !studentName) return;
-                addStudent(selectedRoster.id, matric, studentName);
-                setMatric("");
-                setStudentName("");
+                try {
+                  await addRosterStudentRequest(selectedRoster.id, { matric, name: studentName });
+                  await loadRosters();
+                  setMatric("");
+                  setStudentName("");
+                } catch (err) {
+                  pushToast(err instanceof Error ? err.message : "Failed to add student.", "error");
+                }
               }}>Add</button>
             </div>
+            <button
+              className="btn btn-secondary"
+              onClick={async () => {
+                try {
+                  const result = await confirmRosterRegistrationsRequest(selectedRoster.id);
+                  await loadRosters();
+                  pushToast(`Confirmed ${result.roster.students.length} total students in roster.`, "success");
+                } catch (err) {
+                  pushToast(err instanceof Error ? err.message : "Failed to confirm registrations.", "error");
+                }
+              }}
+            >
+              Confirm Registrations
+            </button>
           </div>
 
           <div className="card">
@@ -325,8 +465,8 @@ export function RostersPage() {
                     <td>{s.name}</td>
                     <td style={{ width: "40px" }}>
                       <DropdownMenu items={[
-                        { label: "Edit", icon: <IconEdit />, onClick: () => {} },
-                        { label: "Remove", icon: <IconTrash />, danger: true, onClick: () => {} },
+                        { label: "Edit", icon: <IconEdit />, onClick: () => void editStudent(s.id, s.matric, s.name) },
+                        { label: "Remove", icon: <IconTrash />, danger: true, onClick: () => void removeStudent(s.id, s.name) },
                       ]} />
                     </td>
                   </tr>
