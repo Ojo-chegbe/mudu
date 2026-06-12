@@ -1,10 +1,17 @@
-﻿# Frontend
+# Frontend
 node_modules/
 dist/
 
 # Local database
 data/*.db
 data/*.sqlite
+data/*.db-wal
+data/*.db-shm
 
 # Logs
 *.log
+*.tsbuildinfo
+
+# Local/private planning documents
+docs/
+*.docx

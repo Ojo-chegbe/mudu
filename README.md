@@ -1,4 +1,4 @@
-﻿# MUDU Local-First App (Flow-Aligned UX + Bun Server Scaffold)
+# MUDU Local-First App (Flow-Aligned UX + Bun Server Scaffold)
 
 The app now follows your 01-11 UX inventory structure directly.
 
@@ -44,6 +44,30 @@ cmd /c npm run dev
 cmd /c npm run build
 ```
 
+## Development
+
+Run the frontend and backend in separate terminals.
+
+Frontend on `http://localhost:5173`:
+
+```bash
+cmd /c npm run dev
+```
+
+Backend API on `http://localhost:3000`:
+
+```bash
+bun run server/index.ts
+```
+
+If `bun` is not yet on your `PATH`, use the installed binary directly:
+
+```bash
+"%USERPROFILE%\\.bun\\bin\\bun.exe" run server/index.ts
+```
+
+Vite is configured to proxy `/api/*` from `5173` to the Bun server on `3000`, so running both servers locally lets the frontend talk to the backend in dev mode.
+
 Bun (absolute path from current machine install):
 
 ```bash
@@ -55,3 +79,9 @@ Useful checks:
 - `http://localhost:3000/api/health`
 - `http://localhost:3000/api/network`
 - `http://localhost:3000/api/dashboard`
+
+## Project Documentation
+
+- [Backend Build Plan](./BACKEND_MVP_BUILD_PLAN.md) - Architecture and implementation source of truth.
+- [Backend Tasks](./BACKEND_MVP_TASKS.md) - Execution checklist.
+- [Agent Rules](./AGENTS.md) - Rules for AI agents and developers working on this project.
