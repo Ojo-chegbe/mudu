@@ -13,6 +13,7 @@ export type Roster = {
   courseCode: string | null;
   lastUsedAt: string;
   students: RosterStudent[];
+  pendingRegistrations: RosterStudent[];
 };
 
 type RosterRow = {
@@ -30,6 +31,17 @@ function getRosterStudents(rosterId: string): RosterStudent[] {
        FROM roster_students
        WHERE roster_id = ?
        ORDER BY full_name ASC`
+    )
+    .all(rosterId) as RosterStudent[];
+}
+
+function getPendingRegistrations(rosterId: string): RosterStudent[] {
+  return db
+    .query(
+      `SELECT id, matric_number AS matric, full_name AS name
+       FROM roster_pending_registrations
+       WHERE roster_id = ? AND status = 'Pending'
+       ORDER BY created_at ASC`
     )
     .all(rosterId) as RosterStudent[];
 }
@@ -61,7 +73,8 @@ function mapRoster(row: RosterRow): Roster {
     description: row.description,
     courseCode: row.courseCode,
     lastUsedAt: row.updatedAt,
-    students: getRosterStudents(row.id)
+    students: getRosterStudents(row.id),
+    pendingRegistrations: getPendingRegistrations(row.id)
   };
 }
 
@@ -244,8 +257,23 @@ export function importRosterStudentsFromCsv(
 }
 
 export function createRosterRegistrationToken(rosterId: string): { token: string; expiresAt: string } {
-  const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
   const now = nowIso();
+
+  // Check if there is an active token
+  const existing = db
+    .query(
+      `SELECT token, expires_at AS expiresAt
+       FROM roster_registration_tokens
+       WHERE roster_id = ? AND status = 'Active' AND expires_at > ?
+       LIMIT 1`
+    )
+    .get(rosterId, now) as { token: string; expiresAt: string } | null;
+
+  if (existing) {
+    return existing;
+  }
+
+  const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
   db.query(
     `INSERT INTO roster_registration_tokens (token, roster_id, status, expires_at, created_at, updated_at)

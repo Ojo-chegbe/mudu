@@ -105,7 +105,7 @@ function UpcomingExamCard({
 
   const menuItems = [
     { label: "Launch", icon: <IconPlus />, onClick: () => navigate("/launch") },
-    { label: "Edit", icon: <IconEdit />, onClick: () => navigate("/exams/new") },
+    { label: "Edit", icon: <IconEdit />, onClick: () => navigate(`/exams/new?examId=${exam.id}`) },
     {
       label: "Duplicate",
       icon: <IconCopy />,
@@ -174,9 +174,10 @@ function RecentExamCard({ exam, onDeleted, onDuplicated }: { exam: HomeExam; onD
   const askConfirm = useAppStore((s) => s.askConfirm);
   const navigate = useNavigate();
 
-  // Results, Duplicate, Delete
+  // Results, Rerun, Duplicate, Delete
   const menuItems = [
     { label: "Results", icon: <IconArchive />, onClick: () => navigate("/results") },
+    { label: "Rerun Exam", icon: <IconRocket />, onClick: () => navigate("/launch") },
     {
       label: "Duplicate",
       icon: <IconCopy />,

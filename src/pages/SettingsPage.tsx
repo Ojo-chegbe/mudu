@@ -187,15 +187,7 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* Danger Zone */}
-      <div className="card" style={{ borderColor: "var(--red-100)" }}>
-        <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-error)" }}>Danger Zone</h3>
-        <p style={{ fontSize: "13px", color: "var(--text-tertiary)", marginBottom: "12px" }}>These actions are irreversible.</p>
-        <div className="row gap-2">
-          <button className="btn btn-danger">Clear All Data</button>
-          <button className="btn btn-danger">Reset to Factory Defaults</button>
-        </div>
-      </div>
+
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { requireLecturer } from "../services/auth";
 import { gradeObjectiveSubmission } from "../services/grading";
 import { deriveRemainingSeconds, syncManagedSessionTimer } from "../services/timers";
 import { formatGap } from "../network";
+import { broadcastExamEnded, broadcastForceSubmit, broadcastSessionFlagged } from "../realtime/hub";
 
 const CREATE_EXAM_RUN_RE = /^\/api\/exams\/([^/]+)\/runs$/;
 const OPEN_RUN_LOBBY_RE = /^\/api\/runs\/([^/]+)\/open-lobby$/;
@@ -156,17 +157,21 @@ function listRunSessions(runId: string): MonitoringSessionRecord[] {
           ss.revoked_at AS revokedAt,
           ss.ends_at AS endsAt,
           ss.flag_count AS flagCount,
-          COALESCE(es.reconnect_gap_seconds, 0) AS reconnectGapSeconds
+          COALESCE(es.reconnect_gap_seconds, 0) AS reconnectGapSeconds,
+          res.total_score AS totalScore,
+          res.max_score AS maxScore
        FROM student_sessions ss
        JOIN exam_runs er ON er.id = ss.run_id
        JOIN roster_students rs ON rs.id = ss.student_id
        LEFT JOIN exam_sessions es
          ON es.exam_id = er.exam_id
         AND es.student_id = ss.student_id
+       LEFT JOIN results res
+         ON res.student_session_id = ss.id
        WHERE ss.run_id = ?
        ORDER BY rs.full_name ASC`
     )
-    .all(runId) as Array<RunSessionContext & { reconnectGapSeconds: number }>;
+    .all(runId) as Array<RunSessionContext & { reconnectGapSeconds: number; totalScore: number | null; maxScore: number | null }>;
 
   return rows.map((row) => {
     const synced = syncManagedSessionTimer({
@@ -180,7 +185,7 @@ function listRunSessions(runId: string): MonitoringSessionRecord[] {
       revokedAt: row.revokedAt,
       endsAt: row.endsAt,
       flagCount: row.flagCount
-    }) as RunSessionContext;
+    });
     const currentQuestion = Number(synced.currentQuestionIndex ?? 0) + 1;
     const reconnectGapSeconds = Number(row.reconnectGapSeconds ?? 0);
 
@@ -194,7 +199,10 @@ function listRunSessions(runId: string): MonitoringSessionRecord[] {
       flags: Number(synced.flagCount ?? 0),
       reconnectGap: formatGap(reconnectGapSeconds),
       reconnectGapSeconds,
-      timeRemaining: synced.status === "Submitted" ? 0 : deriveRemainingSeconds(synced.endsAt)
+      timeRemaining: synced.status === "Submitted" ? 0 : deriveRemainingSeconds(synced.endsAt),
+      scoreText: synced.status === "Submitted" && row.totalScore != null && row.maxScore != null
+        ? `${row.totalScore}/${row.maxScore}`
+        : undefined
     };
   });
 }
@@ -345,6 +353,26 @@ async function endExamRun(request: Request, runId: string): Promise<Response> {
   }
 
   updateExam(run.examId, { status: "Completed" });
+  
+  // Mark all active sessions as submitted
+  const now = new Date().toISOString();
+  db.query(
+    "UPDATE student_sessions SET status = 'Submitted', submitted_at = ?, revoked_at = ?, last_seen_at = ? WHERE run_id = ? AND status != 'Submitted'"
+  ).run(now, now, now, runId);
+  db.query(
+    "UPDATE exam_sessions SET status = 'Submitted', submitted_at = ?, updated_at = ? WHERE exam_id = ? AND status != 'Submitted'"
+  ).run(now, now, run.examId);
+
+  // Grade all sessions for this run
+  const allSessions = db
+    .query("SELECT id FROM student_sessions WHERE run_id = ?")
+    .all(runId) as Array<{ id: string }>;
+  
+  for (const session of allSessions) {
+    gradeObjectiveSubmission(session.id);
+  }
+
+  broadcastExamEnded(runId);
   return json(updated, 200);
 }
 
@@ -444,6 +472,8 @@ async function dismissRunSessionFlags(request: Request, runId: string, sessionId
     payload: { matric: context.matric }
   });
 
+  broadcastSessionFlagged(runId, sessionId, 0);
+
   return json({ status: "ok" });
 }
 
@@ -482,6 +512,8 @@ async function forceSubmitRunSession(request: Request, runId: string, sessionId:
     eventType: "session.force_submit",
     payload: { matric: context.matric }
   });
+
+  broadcastForceSubmit(runId, sessionId);
 
   return json({ status: "ok", session: submitted });
 }

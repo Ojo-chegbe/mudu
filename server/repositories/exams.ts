@@ -10,13 +10,19 @@ export type Exam = {
   passingScore: number;
   rosterId: string;
   status: string;
+  shuffleQuestions?: boolean;
+  fullscreenRequired?: boolean;
+  tabMonitoringEnabled?: boolean;
+  showScoreToStudent?: boolean;
   syncStatus?: string;
   createdAt: string;
   updatedAt: string;
   questionCount?: number;
   rosterStudentCount?: number;
   submittedCount?: number;
+  submittedCount?: number;
   activeRunId?: string | null;
+  latestRunId?: string | null;
 };
 
 export type Question = {
@@ -47,13 +53,19 @@ type ExamRow = {
   rosterId: string;
   rosterName?: string | null;
   status: string;
+  shuffle_questions: number;
+  fullscreen_required: number;
+  tab_monitoring_enabled: number;
+  show_score_to_student: number;
   syncStatus?: string;
   createdAt: string;
   updatedAt: string;
   questionCount?: number;
   rosterStudentCount?: number;
   submittedCount?: number;
+  submittedCount?: number;
   activeRunId?: string | null;
+  latestRunId?: string | null;
 };
 
 type QuestionRow = {
@@ -85,13 +97,18 @@ function mapExam(row: ExamRow): Exam {
     passingScore: row.passingScore,
     rosterId: row.rosterId,
     status: row.status,
+    shuffleQuestions: Boolean(row.shuffle_questions),
+    fullscreenRequired: Boolean(row.fullscreen_required),
+    tabMonitoringEnabled: Boolean(row.tab_monitoring_enabled),
+    showScoreToStudent: Boolean(row.show_score_to_student),
     syncStatus: row.syncStatus ?? "Synced",
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     questionCount: Number(row.questionCount ?? 0),
     rosterStudentCount: Number(row.rosterStudentCount ?? 0),
     submittedCount: Number(row.submittedCount ?? 0),
-    activeRunId: row.activeRunId ?? null
+    activeRunId: row.activeRunId ?? null,
+    latestRunId: row.latestRunId ?? null
   };
 }
 
@@ -211,12 +228,12 @@ export function duplicateQuestionToExam(questionId: string, targetExamId: string
   });
 }
 
-export function listExams(filters?: { status?: string; q?: string }): Exam[] {
+export function listExams(filters?: { status?: string; q?: string; matric?: string }): Exam[] {
   const status = filters?.status?.trim();
   const q = filters?.q?.trim().toLowerCase();
-  const rows = db
-    .query(
-      `SELECT
+  const matric = filters?.matric?.trim();
+  
+  const querySql = `SELECT
         exams.id AS id,
         exams.title AS title,
         COALESCE(exams.course_code, '') AS courseCode,
@@ -226,6 +243,10 @@ export function listExams(filters?: { status?: string; q?: string }): Exam[] {
         exams.roster_id AS rosterId,
         r.name AS rosterName,
         exams.status AS status,
+        exams.shuffle_questions AS shuffle_questions,
+        exams.fullscreen_required AS fullscreen_required,
+        exams.tab_monitoring_enabled AS tab_monitoring_enabled,
+        exams.show_score_to_student AS show_score_to_student,
         COALESCE(
           (SELECT sj.status FROM sync_jobs sj WHERE sj.entity_type = 'exam' AND sj.entity_id = exams.id ORDER BY sj.updated_at DESC LIMIT 1),
           (SELECT sq.status FROM sync_queue sq WHERE sq.exam_id = exams.id ORDER BY sq.updated_at DESC LIMIT 1),
@@ -236,12 +257,16 @@ export function listExams(filters?: { status?: string; q?: string }): Exam[] {
         (SELECT COUNT(*) FROM questions q WHERE q.exam_id = exams.id) AS questionCount,
         (SELECT COUNT(*) FROM roster_students rs WHERE rs.roster_id = exams.roster_id) AS rosterStudentCount,
         (SELECT COUNT(*) FROM exam_sessions es WHERE es.exam_id = exams.id AND es.status = 'Submitted') AS submittedCount,
-        (SELECT er.id FROM exam_runs er WHERE er.exam_id = exams.id AND er.status = 'Running' ORDER BY er.started_at DESC, er.updated_at DESC LIMIT 1) AS activeRunId
+        (SELECT er.id FROM exam_runs er WHERE er.exam_id = exams.id AND er.status IN ('Running', 'Lobby') ORDER BY er.started_at DESC, er.updated_at DESC LIMIT 1) AS activeRunId,
+        (SELECT er.id FROM exam_runs er WHERE er.exam_id = exams.id ORDER BY er.created_at DESC LIMIT 1) AS latestRunId
       FROM exams
       LEFT JOIN rosters r ON r.id = exams.roster_id
-      ORDER BY exams.created_at DESC`
-    )
-    .all() as ExamRow[];
+      ${matric ? `WHERE EXISTS(SELECT 1 FROM roster_students rs WHERE rs.roster_id = exams.roster_id AND rs.matric_number = ?)` : ""}
+      ORDER BY exams.created_at DESC`;
+
+  const rows = matric 
+    ? db.query(querySql).all(matric) as ExamRow[]
+    : db.query(querySql).all() as ExamRow[];
 
   return rows
     .filter((row) => (status ? row.status === status : true))
@@ -262,13 +287,17 @@ export function createExam(input: {
   passingScore: number;
   rosterId: string;
   status?: string;
+  shuffleQuestions?: boolean;
+  fullscreenRequired?: boolean;
+  tabMonitoringEnabled?: boolean;
+  showScoreToStudent?: boolean;
 }): Exam {
   const id = `exam_${crypto.randomUUID()}`;
   const now = nowIso();
   db.query(
     `INSERT INTO exams
-      (id, title, course_code, exam_date, roster_id, status, duration_minutes, passing_score, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      (id, title, course_code, exam_date, roster_id, status, duration_minutes, passing_score, shuffle_questions, fullscreen_required, tab_monitoring_enabled, show_score_to_student, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.title,
@@ -278,6 +307,10 @@ export function createExam(input: {
     input.status ?? "Draft",
     input.durationMinutes,
     input.passingScore,
+    input.shuffleQuestions === false ? 0 : 1,
+    input.fullscreenRequired === false ? 0 : 1,
+    input.tabMonitoringEnabled === false ? 0 : 1,
+    input.showScoreToStudent ? 1 : 0,
     now,
     now
   );
@@ -298,13 +331,18 @@ export function getExamById(examId: string): Exam | null {
         exams.roster_id AS rosterId,
         r.name AS rosterName,
         exams.status AS status,
+        exams.shuffle_questions AS shuffle_questions,
+        exams.fullscreen_required AS fullscreen_required,
+        exams.tab_monitoring_enabled AS tab_monitoring_enabled,
+        exams.show_score_to_student AS show_score_to_student,
         COALESCE(
           (SELECT sj.status FROM sync_jobs sj WHERE sj.entity_type = 'exam' AND sj.entity_id = exams.id ORDER BY sj.updated_at DESC LIMIT 1),
           (SELECT sq.status FROM sync_queue sq WHERE sq.exam_id = exams.id ORDER BY sq.updated_at DESC LIMIT 1),
           'Synced'
         ) AS syncStatus,
         exams.created_at AS createdAt,
-        exams.updated_at AS updatedAt
+        exams.updated_at AS updatedAt,
+        (SELECT er.id FROM exam_runs er WHERE er.exam_id = exams.id ORDER BY er.created_at DESC LIMIT 1) AS latestRunId
       FROM exams
       LEFT JOIN rosters r ON r.id = exams.roster_id
       WHERE exams.id = ?
@@ -326,7 +364,7 @@ export function updateExam(
   const now = nowIso();
   db.query(
     `UPDATE exams
-     SET title = ?, course_code = ?, exam_date = ?, duration_minutes = ?, passing_score = ?, roster_id = ?, status = ?, updated_at = ?
+     SET title = ?, course_code = ?, exam_date = ?, duration_minutes = ?, passing_score = ?, roster_id = ?, status = ?, shuffle_questions = ?, fullscreen_required = ?, tab_monitoring_enabled = ?, show_score_to_student = ?, updated_at = ?
      WHERE id = ?`
   ).run(
     updates.title ?? current.title,
@@ -336,6 +374,10 @@ export function updateExam(
     updates.passingScore ?? current.passingScore,
     updates.rosterId ?? current.rosterId,
     updates.status ?? current.status,
+    updates.shuffleQuestions !== undefined ? (updates.shuffleQuestions ? 1 : 0) : (current.shuffleQuestions ? 1 : 0),
+    updates.fullscreenRequired !== undefined ? (updates.fullscreenRequired ? 1 : 0) : (current.fullscreenRequired ? 1 : 0),
+    updates.tabMonitoringEnabled !== undefined ? (updates.tabMonitoringEnabled ? 1 : 0) : (current.tabMonitoringEnabled ? 1 : 0),
+    updates.showScoreToStudent !== undefined ? (updates.showScoreToStudent ? 1 : 0) : (current.showScoreToStudent ? 1 : 0),
     now,
     examId
   );

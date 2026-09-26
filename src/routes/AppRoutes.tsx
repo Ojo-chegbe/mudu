@@ -17,7 +17,8 @@ import {
   StudentExamPage,
   StudentInstructionsPage,
   StudentLoginPage,
-  StudentSubmittedPage
+  StudentSubmittedPage,
+  StudentRegistrationPage
 } from "../pages/StudentPortalPage";
 
 export function AppRoutes() {
@@ -43,6 +44,7 @@ export function AppRoutes() {
       <Route path="/student/instructions" element={<StudentInstructionsPage />} />
       <Route path="/student/exam" element={<StudentExamPage />} />
       <Route path="/student/submitted" element={<StudentSubmittedPage />} />
+      <Route path="/register/:token" element={<StudentRegistrationPage />} />
       <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
     </Routes>
   );

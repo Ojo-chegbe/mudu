@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { IconWifi, IconRefresh } from "../components/Icons";
+import { IconWifi, IconRefresh, IconCopy } from "../components/Icons";
 import {
   fetchExamsRequest,
+  fetchRunSessionsRequest,
   createExamRunRequest,
   openExamRunLobbyRequest,
   startExamRunRequest,
+  fetchRosterRequest,
+  confirmRosterRegistrationsRequest,
   type ExamRecord,
-  type ExamRun
+  type ExamRun,
+  type RosterRecord,
+  type RunSessionRecord
 } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
@@ -21,15 +26,48 @@ export function LaunchPage() {
   const [serverState, setServerState] = useState<"starting" | "ready" | "error">("starting");
   const [lobbyOpen, setLobbyOpen] = useState(false);
   const [currentRun, setCurrentRun] = useState<ExamRun | null>(null);
+  const [activeRoster, setActiveRoster] = useState<RosterRecord | null>(null);
   const [lifecycleBusy, setLifecycleBusy] = useState<"open-lobby" | "start" | null>(null);
   const [publishedExams, setPublishedExams] = useState<ExamRecord[]>([]);
+  const [selectedExamId, setSelectedExamId] = useState("");
   const [examsLoading, setExamsLoading] = useState(true);
+  const [lobbySessions, setLobbySessions] = useState<RunSessionRecord[]>([]);
   const lifecycleBusyRef = useRef(false);
 
+  /* ── Derive lobby counts from live session data ── */
+  const connectedCount = lobbySessions.filter(
+    (s) => s.status === "Connected" || s.status === "Active"
+  ).length;
+  const totalCount = lobbySessions.length;
+
+  /* ── Load active roster & sessions while lobby is open ── */
+  useEffect(() => {
+    if (!lobbyOpen || !currentRun) return;
+
+    const loadLobbyState = async () => {
+      try {
+        const [roster, sessions] = await Promise.all([
+          currentRun.rosterId ? fetchRosterRequest(currentRun.rosterId) : Promise.resolve(null),
+          fetchRunSessionsRequest(currentRun.id).catch(() => [] as RunSessionRecord[])
+        ]);
+        if (roster) setActiveRoster(roster);
+        setLobbySessions(sessions);
+      } catch {
+        // ignore polling errors
+      }
+    };
+
+    void loadLobbyState();
+    const interval = setInterval(() => { void loadLobbyState(); }, 3000);
+    return () => clearInterval(interval);
+  }, [lobbyOpen, currentRun?.id, currentRun?.rosterId]);
+
+  /* ── Fetch network info on mount ── */
   useEffect(() => {
     loadNetwork().then(() => setServerState("ready")).catch(() => setServerState("error"));
   }, [loadNetwork]);
 
+  /* ── Fetch published exams ── */
   useEffect(() => {
     let mounted = true;
     setExamsLoading(true);
@@ -37,6 +75,9 @@ export function LaunchPage() {
       .then((items) => {
         if (!mounted) return;
         setPublishedExams(items);
+        if (items.length > 0 && !selectedExamId) {
+          setSelectedExamId(items[0].id);
+        }
       })
       .catch((err) => {
         if (!mounted) return;
@@ -48,12 +89,8 @@ export function LaunchPage() {
         setExamsLoading(false);
       });
 
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [pushToast]);
-
-  const selectedExamId = publishedExams[0]?.id ?? "";
 
   const handleOpenLobby = async () => {
     if (lifecycleBusyRef.current) return;
@@ -82,9 +119,6 @@ export function LaunchPage() {
     }
   };
 
-  const connectedCount = 0;
-  const totalCount = 0;
-
   const handleStartExam = () => {
     if (lifecycleBusyRef.current) return;
     askConfirm({
@@ -104,7 +138,7 @@ export function LaunchPage() {
           const runningRun = await startExamRunRequest(currentRun.id);
           setCurrentRun(runningRun);
           pushToast("Exam started successfully.", "success");
-          navigate("/monitor");
+          navigate(`/monitor?runId=${runningRun.id}`);
         } catch (err) {
           pushToast(err instanceof Error ? err.message : "Failed to start exam.", "error");
         } finally {
@@ -114,6 +148,8 @@ export function LaunchPage() {
       }
     });
   };
+
+  const selectedExam = publishedExams.find((e) => e.id === selectedExamId) ?? null;
 
   return (
     <div className="stack gap-6">
@@ -139,23 +175,93 @@ export function LaunchPage() {
       )}
 
       {serverState === "ready" && !lobbyOpen && (
-        <div className="card stack gap-4">
-          <div className="connection-box">
-            <IconWifi />
-            <div style={{ fontSize: "13px", color: "var(--text-tertiary)", marginTop: "8px" }}>Students open this in their browser</div>
-            <div className="connection-ip">{network.localIp}:{network.port}</div>
-            <div style={{ fontSize: "14px", color: "var(--text-secondary)" }}>{network.joinUrl}</div>
+        <div className="stack gap-4">
+          {/* Network info */}
+          <div className="card stack gap-4">
+            <div className="connection-box">
+              <IconWifi />
+              <div style={{ fontSize: "13px", color: "var(--text-tertiary)", marginTop: "8px" }}>Students open this in their browser</div>
+              <div className="connection-ip row gap-2" style={{ alignItems: "center", justifyContent: "center" }}>
+                {network.localIp}:{network.port}/student/login
+                <button
+                  className="btn btn-icon btn-sm"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${network.localIp}:${network.port}/student/login`);
+                    pushToast("Link copied to clipboard", "success");
+                  }}
+                  title="Copy Link"
+                >
+                  <IconCopy />
+                </button>
+              </div>
+              <div className="row gap-2" style={{ alignItems: "center", justifyContent: "center" }}>
+                <div style={{ fontSize: "14px", color: "var(--text-secondary)" }}>{network.joinUrl.endsWith("/student/login") ? network.joinUrl : `${network.joinUrl}/student/login`}</div>
+                <button
+                  className="btn btn-icon btn-sm"
+                  onClick={() => {
+                    const url = network.joinUrl.endsWith("/student/login") ? network.joinUrl : `${network.joinUrl}/student/login`;
+                    navigator.clipboard.writeText(url);
+                    pushToast("Link copied to clipboard", "success");
+                  }}
+                  title="Copy Link"
+                >
+                  <IconCopy />
+                </button>
+              </div>
+            </div>
+            <div style={{ textAlign: "center", fontSize: "13px", color: "var(--text-tertiary)" }}>
+              Project this screen in the exam hall. Students connect from any browser on the same WiFi network.
+            </div>
           </div>
-          <div style={{ textAlign: "center", fontSize: "13px", color: "var(--text-tertiary)" }}>
-            Project this screen in the exam hall. Students connect from any browser on the same WiFi network.
-          </div>
-          <div className="row" style={{ justifyContent: "center", gap: "12px" }}>
-            <button className="btn btn-secondary" onClick={() => loadNetwork()}>
-              <IconRefresh /> Refresh IP
-            </button>
-            <button className="btn btn-primary btn-lg" onClick={() => void handleOpenLobby()} disabled={examsLoading || lifecycleBusy !== null}>
-              {examsLoading ? "Loading Exams..." : lifecycleBusy === "open-lobby" ? "Opening Lobby..." : "Open Lobby"}
-            </button>
+
+          {/* Exam selector */}
+          <div className="card stack gap-4">
+            <h3 style={{ fontSize: "16px", fontWeight: 600, margin: 0 }}>Select Exam to Launch</h3>
+            {examsLoading ? (
+              <div style={{ color: "var(--text-tertiary)", fontSize: "14px" }}>Loading published exams...</div>
+            ) : publishedExams.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "24px 0" }}>
+                <p style={{ color: "var(--text-tertiary)", marginBottom: "12px" }}>No published exams available.</p>
+                <button className="btn btn-secondary" onClick={() => navigate("/exams/new")}>Create an Exam</button>
+              </div>
+            ) : (
+              <>
+                <select
+                  className="form-select"
+                  value={selectedExamId}
+                  onChange={(e) => setSelectedExamId(e.target.value)}
+                  style={{ width: "100%" }}
+                >
+                  {publishedExams.map((exam) => (
+                    <option key={exam.id} value={exam.id}>
+                      {exam.title} — {exam.courseCode || "No course"} ({exam.questionCount ?? 0} questions, {exam.rosterStudentCount ?? 0} students)
+                    </option>
+                  ))}
+                </select>
+                {selectedExam && (
+                  <div className="row gap-4" style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
+                    <span>Duration: {selectedExam.durationMinutes}min</span>
+                    <span>•</span>
+                    <span>Passing: {selectedExam.passingScore}%</span>
+                    <span>•</span>
+                    <span>Roster: {selectedExam.rosterName ?? "None"}</span>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="row" style={{ justifyContent: "center", gap: "12px" }}>
+              <button className="btn btn-secondary" onClick={() => loadNetwork()}>
+                <IconRefresh /> Refresh IP
+              </button>
+              <button
+                className="btn btn-primary btn-lg"
+                onClick={() => void handleOpenLobby()}
+                disabled={examsLoading || lifecycleBusy !== null || !selectedExamId}
+              >
+                {lifecycleBusy === "open-lobby" ? "Opening Lobby..." : "Open Lobby"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -165,11 +271,18 @@ export function LaunchPage() {
           <div className="card">
             <div className="row-between">
               <div>
-                <div style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>Waiting for students...</div>
+                <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>
+                  {selectedExam?.title ?? "Exam"} — Lobby
+                </div>
                 <div style={{ fontSize: "24px", fontWeight: 700 }}>{connectedCount} / {totalCount} connected</div>
                 <div style={{ fontSize: "13px", color: "var(--text-tertiary)", marginTop: "4px" }}>
                   Join code: <strong>{currentRun?.joinCode ?? "—"}</strong>
                 </div>
+                {totalCount === 0 && (
+                  <div style={{ fontSize: "13px", color: "var(--text-tertiary)", marginTop: "4px" }}>
+                    Waiting for students to join...
+                  </div>
+                )}
               </div>
               <button className="btn btn-primary btn-lg" onClick={handleStartExam} disabled={lifecycleBusy !== null || currentRun?.status !== "Lobby"}>
                 {lifecycleBusy === "start" ? "Starting Exam..." : "Start Exam"}
@@ -177,13 +290,73 @@ export function LaunchPage() {
             </div>
           </div>
 
-          <div className="status-grid">
-            <div className="card" style={{ padding: "12px" }}>
-              <div style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
-                Student lobby presence will appear in monitoring once session endpoints are wired to the runs domain.
+          {/* Lobby student list */}
+          {lobbySessions.length > 0 && (
+            <div className="card">
+              <h3 style={{ fontSize: "15px", fontWeight: 600, marginBottom: "12px" }}>Connected Students</h3>
+              <div style={{ maxHeight: "300px", overflowY: "auto" }}>
+                <table className="table" style={{ margin: 0 }}>
+                  <thead><tr><th>Name</th><th>Matric</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {lobbySessions.map((s) => (
+                      <tr key={s.id}>
+                        <td style={{ fontWeight: 500 }}>{s.name}</td>
+                        <td>{s.matric}</td>
+                        <td>
+                          <span className={`badge ${s.status === "Connected" || s.status === "Active" ? "badge-success" : "badge-neutral"}`}>
+                            {s.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* Pending registrations */}
+          {activeRoster?.pendingRegistrations && activeRoster.pendingRegistrations.length > 0 && (
+            <div className="card stack gap-3" style={{ background: "var(--color-warning-light)" }}>
+              <div className="row-between">
+                <div>
+                  <h3 style={{ fontSize: "15px", fontWeight: 600, color: "var(--color-warning-dark)", margin: 0 }}>Pending Registrations</h3>
+                  <p style={{ fontSize: "13px", color: "var(--color-warning-dark)", marginTop: "4px" }}>
+                    {activeRoster.pendingRegistrations.length} students registered last-minute. Approve them so they can join!
+                  </p>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={async () => {
+                    if (!activeRoster) return;
+                    try {
+                      await confirmRosterRegistrationsRequest(activeRoster.id);
+                      const r = await fetchRosterRequest(activeRoster.id);
+                      setActiveRoster(r);
+                      pushToast(`Approved ${activeRoster.pendingRegistrations!.length} registrations.`, "success");
+                    } catch (err) {
+                      pushToast(err instanceof Error ? err.message : "Failed to confirm registrations.", "error");
+                    }
+                  }}
+                >
+                  Approve All
+                </button>
+              </div>
+              <div style={{ background: "white", borderRadius: "var(--radius-md)", border: "1px solid var(--border-soft)", overflow: "hidden", maxHeight: "200px", overflowY: "auto" }}>
+                <table className="table" style={{ margin: 0, border: "none" }}>
+                  <thead><tr><th>Matric Number</th><th>Full Name</th></tr></thead>
+                  <tbody>
+                    {activeRoster.pendingRegistrations.map((s) => (
+                      <tr key={s.id}>
+                        <td>{s.matric}</td>
+                        <td>{s.name}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

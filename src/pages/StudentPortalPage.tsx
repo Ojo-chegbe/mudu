@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   clearStudentSessionToken,
   fetchAppSettings,
@@ -11,6 +11,7 @@ import {
   saveStudentAnswerRequest,
   studentLoginRequest,
   submitStudentExamRequest,
+  registerStudentByTokenRequest,
   type ExamRecord,
   type StudentExamRecord
 } from "../api/client";
@@ -58,6 +59,106 @@ function useStudentExam() {
   return { payload, setPayload, loading, error };
 }
 
+export function StudentRegistrationPage() {
+  const { token } = useParams<{ token: string }>();
+  const navigate = useNavigate();
+  const [matric, setMatric] = useState("");
+  const [name, setName] = useState("");
+  const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [message, setMessage] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!matric.trim() || !name.trim()) {
+      setMessage("Please fill in both fields.");
+      setStatus("error");
+      return;
+    }
+
+    try {
+      setStatus("submitting");
+
+      await registerStudentByTokenRequest(token || "", { matric: matric.trim(), name: name.trim() });
+      setStatus("success");
+      setMessage("Registration successful! You can now join the exam when it starts.");
+    } catch (err) {
+      setStatus("error");
+      setMessage(err instanceof Error ? err.message : "Failed to register.");
+    }
+  };
+
+  if (status === "success") {
+    return (
+      <div className="stack gap-4" style={{ maxWidth: "500px", margin: "40px auto", padding: "24px" }}>
+        <div className="card stack gap-4 text-center">
+          <h1 style={{ fontSize: "24px", color: "var(--color-success)" }}>Registered Successfully</h1>
+          <p style={{ color: "var(--text-secondary)" }}>{message}</p>
+          <button className="btn btn-primary" onClick={() => navigate("/student/login")}>
+            Go to Student Login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack gap-4" style={{ maxWidth: "500px", margin: "40px auto", padding: "24px" }}>
+      <div className="card stack gap-4">
+        <div>
+          <h1 style={{ fontSize: "24px", margin: 0 }}>Student Registration</h1>
+          <p style={{ color: "var(--text-secondary)", marginTop: "4px" }}>Register for the upcoming exam</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="stack gap-4">
+          <div className="form-group">
+            <label className="form-label">Full Name</label>
+            <input
+              className="form-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. John Doe"
+              disabled={status === "submitting"}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Matric Number</label>
+            <input
+              className="form-input"
+              value={matric}
+              onChange={(e) => setMatric(e.target.value)}
+              placeholder="e.g. CSC/2021/001"
+              disabled={status === "submitting"}
+            />
+          </div>
+          {status === "error" && (
+            <div className="badge badge-error" style={{ whiteSpace: "normal" }}>
+              {message}
+            </div>
+          )}
+          <button
+            type="submit"
+            className="btn btn-primary btn-lg"
+            disabled={status === "submitting"}
+            style={{ marginTop: "8px" }}
+          >
+            {status === "submitting" ? "Registering..." : "Register"}
+          </button>
+        </form>
+        
+        <div style={{ textAlign: "center", marginTop: "16px", paddingTop: "16px", borderTop: "1px solid var(--border-soft)" }}>
+          <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "8px" }}>Already registered?</p>
+          <button 
+            className="btn btn-secondary btn-sm" 
+            onClick={() => navigate("/student/login")}
+          >
+            Go to Student Login
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function StudentLoginPage() {
   const navigate = useNavigate();
   const institution = useAppStore((s) => s.institution);
@@ -70,27 +171,30 @@ export function StudentLoginPage() {
   const institutionName = institution || "Institution";
 
   useEffect(() => {
-    let mounted = true;
     clearStudentSessionToken();
-    void fetchExamsRequest()
+  }, []);
+
+  const handleContinue = () => {
+    if (!matric.trim()) {
+      setStateText("Enter your matric number to continue.");
+      return;
+    }
+    setStateText("");
+    setLoading(true);
+    setStep("exam");
+
+    fetchExamsRequest({ matric: matric.trim() })
       .then((items) => {
-        if (!mounted) return;
-        setAvailableExams(items.filter((exam) => (exam.status === "Running" || exam.status === "Active") && Boolean(exam.activeRunId)));
+        setAvailableExams(items.filter((exam) => Boolean(exam.activeRunId)));
         setStateText("");
       })
       .catch((error) => {
-        if (!mounted) return;
         setStateText(error instanceof Error ? error.message : "Failed to load available exams.");
       })
       .finally(() => {
-        if (!mounted) return;
         setLoading(false);
       });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  };
 
   return (
     <div className="stack gap-4" style={{ maxWidth: "760px", margin: "0 auto", padding: "24px" }}>
@@ -110,17 +214,15 @@ export function StudentLoginPage() {
                 placeholder="e.g. CSC/2021/001"
               />
             </div>
+            {stateText && (
+              <div className="badge badge-error" style={{ whiteSpace: "normal" }}>
+                {stateText}
+              </div>
+            )}
             <button
               className="btn btn-primary btn-lg"
               style={{ fontSize: "20px", height: "56px" }}
-              onClick={() => {
-                if (!matric.trim()) {
-                  setStateText("Enter your matric number to continue.");
-                  return;
-                }
-                setStateText("");
-                setStep("exam");
-              }}
+              onClick={handleContinue}
             >
               Continue
             </button>
@@ -157,19 +259,7 @@ export function StudentLoginPage() {
                     try {
                       setJoiningExamId(exam.id);
                       const result = await studentLoginRequest({ runId: exam.activeRunId, matric: matric.trim() });
-                      useAppStore.setState((prev) => ({
-                        studentMode: {
-                          ...prev.studentMode,
-                          examId: exam.id,
-                          matric: matric.trim(),
-                          name: result.studentName,
-                          currentQuestion: result.currentQuestion,
-                          timeRemaining: result.timeRemainingSeconds,
-                          started: false,
-                          submitted: false,
-                          answers: {}
-                        }
-                      }));
+
                       setStateText("");
                       navigate("/student/instructions");
                     } catch (error) {
@@ -192,6 +282,16 @@ export function StudentLoginPage() {
             {stateText}
           </div>
         ) : null}
+      </div>
+
+      <div style={{ textAlign: "center", marginTop: "16px" }}>
+        <button 
+          className="btn btn-ghost btn-sm" 
+          onClick={() => navigate("/login")}
+          style={{ opacity: 0.5, fontSize: "12px" }}
+        >
+          Lecturer Login
+        </button>
       </div>
     </div>
   );
@@ -325,6 +425,52 @@ export function StudentExamPage() {
       window.clearInterval(id);
     };
   }, [navigate]);
+
+  // WebSocket for Realtime Commands
+  useEffect(() => {
+    if (!payload?.session?.runId) return;
+
+    let ws: WebSocket | null = null;
+    let mounted = true;
+
+    const connectWs = () => {
+      const token = getStoredStudentSessionToken();
+      if (!token) return;
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${protocol}//${window.location.host}/api/ws?role=student&runId=${payload.session.runId}&token=${token}`;
+      ws = new WebSocket(url);
+
+      ws.onmessage = (event) => {
+        if (!mounted) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "force_submit") {
+            setWarningMessage("Your exam was submitted by the invigilator.");
+            void flushPendingSaves().then(() => navigate("/student/submitted"));
+          } else if (data.type === "exam_ended") {
+            setWarningMessage("The exam has been ended by the invigilator.");
+            void flushPendingSaves().then(() => navigate("/student/submitted"));
+          }
+        } catch (e) {
+          console.error("WS parse error", e);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!mounted) return;
+        // Reconnect after 5s if dropped
+        window.setTimeout(connectWs, 5000);
+      };
+    };
+
+    connectWs();
+
+    return () => {
+      mounted = false;
+      if (ws) ws.close();
+    };
+  }, [payload?.session?.runId, navigate]);
 
   useEffect(() => {
     let cancelled = false;

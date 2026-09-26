@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   fetchDashboardRequest,
-  fetchExamSessionsRequest,
   fetchExamsRequest,
   fetchSyncStatusRequest,
+  fetchRunSessionsRequest,
   type ExamRecord,
-  type ExamSessionRecord,
+  type RunSessionRecord,
   type SyncStatusRecord
 } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
@@ -34,7 +34,7 @@ export function NotificationsPage() {
   const [filter, setFilter] = useState<"All" | "Action Needed" | "Updates">("All");
   const [dismissedIds, setDismissedIds] = useState<string[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
-  const [sessions, setSessions] = useState<ExamSessionRecord[]>([]);
+  const [sessions, setSessions] = useState<RunSessionRecord[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatusRecord | null>(null);
   const [unsyncedCount, setUnsyncedCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -51,11 +51,11 @@ export function NotificationsPage() {
           fetchSyncStatusRequest(),
           fetchExamsRequest()
         ]);
-        const runningExams = examList.filter((exam) => exam.status === "Running" || exam.status === "Active");
+        const runningExams = examList.filter((exam) => (exam.status === "Running" || exam.status === "Active") && exam.activeRunId);
         const sessionList = (
           await Promise.all(
             runningExams.map((exam) =>
-              fetchExamSessionsRequest(exam.id).catch(() => [])
+              fetchRunSessionsRequest(exam.activeRunId!).catch(() => [])
             )
           )
         ).flat();

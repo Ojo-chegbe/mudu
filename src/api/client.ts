@@ -27,6 +27,7 @@ export type RosterRecord = {
   courseCode: string | null;
   lastUsedAt: string;
   students: RosterStudent[];
+  pendingRegistrations?: RosterStudent[];
 };
 
 export type ExamStatus = "Draft" | "Published" | "Archived" | "Active" | "Running" | "Completed";
@@ -64,6 +65,10 @@ export type ExamRecord = {
   passingScore: number;
   rosterId: string;
   status: ExamStatus;
+  shuffleQuestions?: boolean;
+  fullscreenRequired?: boolean;
+  tabMonitoringEnabled?: boolean;
+  showScoreToStudent?: boolean;
   syncStatus?: string;
   createdAt: string;
   updatedAt: string;
@@ -71,9 +76,10 @@ export type ExamRecord = {
   rosterStudentCount?: number;
   submittedCount?: number;
   activeRunId?: string | null;
+  latestRunId?: string | null;
 };
 
-export type ExamSessionRecord = {
+export type RunSessionRecord = {
   id: string;
   name: string;
   matric: string;
@@ -84,9 +90,8 @@ export type ExamSessionRecord = {
   reconnectGap: string;
   reconnectGapSeconds: number;
   timeRemaining: number;
+  scoreText?: string;
 };
-
-export type RunSessionRecord = ExamSessionRecord;
 
 export type ExamRun = {
   id: string;
@@ -100,7 +105,26 @@ export type ExamRun = {
   updatedAt: string;
 };
 
-export type ExamResultsRecord = {
+export type ResultSummary = {
+  id: string;
+  runId: string;
+  studentSessionId: string;
+  objectiveScore: number;
+  essayScore: number | null;
+  totalScore: number;
+  maxScore: number;
+  percentage: number;
+  status: string;
+  gradedAt: string;
+  name: string;
+  matric: string;
+};
+
+export type RunResultsRecord = {
+  results: ResultSummary[];
+  averageScore: number;
+  passRate: number;
+  flaggedScriptsCount: number;
   scoreBands: Array<{ range: string; count: number }>;
   questionInsights: Array<{ id: string; type: string; successRate: string; issue: string }>;
 };
@@ -128,6 +152,7 @@ export type StudentExamQuestionRecord = {
 export type StudentExamRecord = {
   session: {
     id: string;
+    runId: string;
     status: string;
     currentQuestion: number;
     endsAt: string;
@@ -146,6 +171,7 @@ export type StudentExamRecord = {
 
 export type StudentSessionRecord = {
   sessionId: string;
+  runId: string;
   status: string;
   currentQuestion: number;
   endsAt: string;
@@ -206,10 +232,11 @@ export async function fetchSyncStatusRequest(): Promise<SyncStatusRecord> {
   return (await response.json()) as SyncStatusRecord;
 }
 
-export async function fetchExamsRequest(input?: { status?: string; q?: string }): Promise<ExamRecord[]> {
+export async function fetchExamsRequest(input?: { status?: string; q?: string; matric?: string }): Promise<ExamRecord[]> {
   const params = new URLSearchParams();
   if (input?.status) params.set("status", input.status);
   if (input?.q) params.set("q", input.q);
+  if (input?.matric) params.set("matric", input.matric);
   const query = params.toString();
   const response = await fetch(`${API_ROOT}/exams${query ? `?${query}` : ""}`);
   if (!response.ok) {
@@ -220,6 +247,16 @@ export async function fetchExamsRequest(input?: { status?: string; q?: string })
   return payload.exams;
 }
 
+export async function fetchExamByIdRequest(examId: string): Promise<ExamRecord & { questions: any[] }> {
+  const response = await fetch(`${API_ROOT}/exams/${encodeURIComponent(examId)}`);
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to fetch exam.", "FETCH_EXAM_FAILED");
+  }
+  const payload = (await response.json()) as { exam: ExamRecord & { questions: any[] } };
+  return payload.exam;
+}
+
 export async function deleteExamRequest(examId: string): Promise<void> {
   const response = await fetch(`${API_ROOT}/exams/${encodeURIComponent(examId)}`, {
     method: "DELETE"
@@ -228,6 +265,62 @@ export async function deleteExamRequest(examId: string): Promise<void> {
     const err = await parseError(response);
     throw toApiClientError(err, "Failed to delete exam.", "DELETE_EXAM_FAILED");
   }
+}
+
+export async function fetchRunResultsRequest(runId: string): Promise<RunResultsRecord> {
+  const token = getAuthToken();
+  if (!token) {
+    throw new ApiClientError("INVALID_LECTURER_TOKEN", "Missing lecturer token.");
+  }
+
+  const response = await fetch(`${API_ROOT}/runs/${encodeURIComponent(runId)}/results`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to fetch run results.", "FETCH_RUN_RESULTS_FAILED");
+  }
+  return (await response.json()) as RunResultsRecord;
+}
+
+export async function gradeRunRequest(runId: string): Promise<{ status: string; gradedSessions: number }> {
+  const token = getAuthToken();
+  if (!token) {
+    throw new ApiClientError("INVALID_LECTURER_TOKEN", "Missing lecturer token.");
+  }
+
+  const response = await fetch(`${API_ROOT}/runs/${encodeURIComponent(runId)}/grade`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to grade run.", "GRADE_RUN_FAILED");
+  }
+  return (await response.json()) as { status: string; gradedSessions: number };
+}
+
+export async function updateEssayScoreRequest(resultId: string, score: number): Promise<ResultSummary> {
+  const token = getAuthToken();
+  if (!token) {
+    throw new ApiClientError("INVALID_LECTURER_TOKEN", "Missing lecturer token.");
+  }
+
+  const response = await fetch(`${API_ROOT}/results/${encodeURIComponent(resultId)}/essay`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ score })
+  });
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to update essay score.", "UPDATE_ESSAY_SCORE_FAILED");
+  }
+  return (await response.json()) as ResultSummary;
+}
+
+export function getResultsExportUrl(runId: string): string {
+  const token = getAuthToken() ?? "";
+  return `${API_ROOT}/runs/${encodeURIComponent(runId)}/results/export?token=${encodeURIComponent(token)}`;
 }
 
 export async function archiveExamRequest(examId: string): Promise<ExamRecord> {
@@ -252,44 +345,6 @@ export async function duplicateExamRequest(examId: string): Promise<ExamRecord> 
   }
   const payload = (await response.json()) as { exam: ExamRecord };
   return payload.exam;
-}
-
-export async function fetchExamSessionsRequest(examId: string): Promise<ExamSessionRecord[]> {
-  const response = await fetch(`${API_ROOT}/exams/${encodeURIComponent(examId)}/sessions`);
-  if (!response.ok) {
-    const err = await parseError(response);
-    throw toApiClientError(err, "Failed to fetch exam sessions.", "FETCH_EXAM_SESSIONS_FAILED");
-  }
-  const payload = (await response.json()) as { sessions: ExamSessionRecord[] };
-  return payload.sessions;
-}
-
-export async function postExamSessionActionRequest(
-  examId: string,
-  matric: string,
-  action: "extend_time" | "dismiss_flags" | "force_submit"
-): Promise<void> {
-  const response = await fetch(
-    `${API_ROOT}/exams/${encodeURIComponent(examId)}/sessions/${encodeURIComponent(matric)}/actions`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action })
-    }
-  );
-  if (!response.ok) {
-    const err = await parseError(response);
-    throw toApiClientError(err, "Failed to run session action.", "SESSION_ACTION_FAILED");
-  }
-}
-
-export async function fetchExamResultsRequest(examId: string): Promise<ExamResultsRecord> {
-  const response = await fetch(`${API_ROOT}/exams/${encodeURIComponent(examId)}/results`);
-  if (!response.ok) {
-    const err = await parseError(response);
-    throw toApiClientError(err, "Failed to fetch exam results.", "FETCH_EXAM_RESULTS_FAILED");
-  }
-  return (await response.json()) as ExamResultsRecord;
 }
 
 export async function fetchRunSessionsRequest(runId: string): Promise<RunSessionRecord[]> {
@@ -411,7 +466,7 @@ function setAuthToken(token: string): void {
   localStorage.setItem(AUTH_TOKEN_KEY, token);
 }
 
-function clearAuthToken(): void {
+export function clearAuthToken(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
@@ -594,6 +649,16 @@ export async function fetchRosters(): Promise<RosterRecord[]> {
   return payload.rosters;
 }
 
+export async function fetchRosterRequest(rosterId: string): Promise<RosterRecord> {
+  const response = await fetch(`${API_ROOT}/rosters/${encodeURIComponent(rosterId)}`);
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to fetch roster.", "FETCH_ROSTER_FAILED");
+  }
+  const payload = (await response.json()) as { roster: RosterRecord };
+  return payload.roster;
+}
+
 export async function createRosterRequest(input: {
   name: string;
   description?: string;
@@ -747,6 +812,10 @@ export async function createExamRequest(input: {
   passingScore?: number;
   rosterId: string;
   status?: ExamStatus;
+  shuffleQuestions?: boolean;
+  fullscreenRequired?: boolean;
+  tabMonitoringEnabled?: boolean;
+  showScoreToStudent?: boolean;
 }): Promise<ExamRecord> {
   const response = await fetch(`${API_ROOT}/exams`, {
     method: "POST",
@@ -771,6 +840,10 @@ export async function updateExamRequest(
     passingScore: number;
     rosterId: string;
     status: ExamStatus;
+    shuffleQuestions: boolean;
+    fullscreenRequired: boolean;
+    tabMonitoringEnabled: boolean;
+    showScoreToStudent: boolean;
   }>
 ): Promise<ExamRecord> {
   const response = await fetch(`${API_ROOT}/exams/${encodeURIComponent(examId)}`, {
@@ -899,6 +972,7 @@ export async function publishExamRequest(examId: string): Promise<ExamRecord> {
 export async function generateAiQuestionsFromTextRequest(input: {
   examId: string;
   sourceText: string;
+  difficulty?: string;
   count?: number;
 }): Promise<AiGenerateQuestionsResponse> {
   const response = await fetch(`${API_ROOT}/ai/generate-from-text`, {
@@ -911,6 +985,50 @@ export async function generateAiQuestionsFromTextRequest(input: {
     throw toApiClientError(err, "Failed to generate AI questions.", "AI_GENERATION_FAILED");
   }
   return (await response.json()) as AiGenerateQuestionsResponse;
+}
+
+export async function generateAiQuestionsFromFileRequest(input: {
+  examId: string;
+  file: File;
+  difficulty?: string;
+  count?: number;
+}): Promise<AiGenerateQuestionsResponse> {
+  const formData = new FormData();
+  formData.append("examId", input.examId);
+  formData.append("file", input.file);
+  if (input.difficulty) formData.append("difficulty", input.difficulty);
+  if (input.count) formData.append("count", input.count.toString());
+
+  const response = await fetch(`${API_ROOT}/ai/generate-from-file`, {
+    method: "POST",
+    body: formData
+  });
+
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to generate AI questions from file.", "AI_FILE_GENERATION_FAILED");
+  }
+  return (await response.json()) as AiGenerateQuestionsResponse;
+}
+
+export async function approveAiQuestionRequest(questionId: string): Promise<void> {
+  const response = await fetch(`${API_ROOT}/ai/questions/${encodeURIComponent(questionId)}/approve`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to approve question.", "APPROVE_QUESTION_FAILED");
+  }
+}
+
+export async function discardAiQuestionRequest(questionId: string): Promise<void> {
+  const response = await fetch(`${API_ROOT}/ai/questions/${encodeURIComponent(questionId)}/discard`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const err = await parseError(response);
+    throw toApiClientError(err, "Failed to discard question.", "DISCARD_QUESTION_FAILED");
+  }
 }
 
 export async function createExamRunRequest(examId: string): Promise<ExamRun> {

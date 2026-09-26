@@ -13,7 +13,7 @@ import {
   IconSidebarCollapse,
   IconStudents
 } from "../components/Icons";
-import { fetchDashboardRequest, fetchExamSessionsRequest, fetchExamsRequest, fetchSyncStatusRequest } from "../api/client";
+import { fetchDashboardRequest, fetchRunSessionsRequest, fetchExamsRequest, fetchSyncStatusRequest } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
 const mainNav = [
@@ -66,7 +66,7 @@ export function AppLayout() {
         const sessions = (
           await Promise.all(
             runningExams.map((exam) =>
-              fetchExamSessionsRequest(exam.id).catch(() => [])
+              exam.activeRunId ? fetchRunSessionsRequest(exam.activeRunId).catch(() => []) : []
             )
           )
         ).flat();

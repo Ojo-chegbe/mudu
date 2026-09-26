@@ -206,10 +206,11 @@ export async function handleRosterRoutes(request: Request, pathname: string): Pr
     }
 
     try {
-      addPendingRegistration({ rosterId: link.rosterId, token, matric, name });
-      return json({ status: "pending", rosterId: link.rosterId });
+      addRosterStudent(link.rosterId, { matric, name });
+      return json({ status: "confirmed", rosterId: link.rosterId });
     } catch {
-      return apiError(409, "DUPLICATE_MATRIC", "This matric number already exists in the roster.");
+      // Treat duplicate as success so the student can proceed to login
+      return json({ status: "confirmed", rosterId: link.rosterId });
     }
   }
 

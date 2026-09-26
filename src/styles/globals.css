@@ -229,7 +229,7 @@ img { display: block; max-width: 100%; }
   justify-content: space-between;
   margin-bottom: var(--sp-6);
 }
-.page-header-left {}
+
 .page-greeting { font-size: 13px; color: var(--text-tertiary); margin-bottom: 2px; }
 .page-title { font-size: 24px; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; }
 

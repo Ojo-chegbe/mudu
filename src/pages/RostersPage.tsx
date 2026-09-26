@@ -439,21 +439,47 @@ export function RostersPage() {
                 }
               }}>Add</button>
             </div>
-            <button
-              className="btn btn-secondary"
-              onClick={async () => {
-                try {
-                  const result = await confirmRosterRegistrationsRequest(selectedRoster.id);
-                  await loadRosters();
-                  pushToast(`Confirmed ${result.roster.students.length} total students in roster.`, "success");
-                } catch (err) {
-                  pushToast(err instanceof Error ? err.message : "Failed to confirm registrations.", "error");
-                }
-              }}
-            >
-              Confirm Registrations
-            </button>
           </div>
+
+          {selectedRoster.pendingRegistrations && selectedRoster.pendingRegistrations.length > 0 && (
+            <div className="card stack gap-3" style={{ background: "var(--color-warning-light)" }}>
+              <div className="row-between">
+                <div>
+                  <h3 style={{ fontSize: "15px", fontWeight: 600, color: "var(--color-warning-dark)", margin: 0 }}>Pending Registrations</h3>
+                  <p style={{ fontSize: "13px", color: "var(--color-warning-dark)", marginTop: "4px" }}>
+                    {selectedRoster.pendingRegistrations.length} students have registered and are waiting for your approval.
+                  </p>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={async () => {
+                    try {
+                      await confirmRosterRegistrationsRequest(selectedRoster.id);
+                      await loadRosters();
+                      pushToast(`Approved ${selectedRoster.pendingRegistrations!.length} registrations.`, "success");
+                    } catch (err) {
+                      pushToast(err instanceof Error ? err.message : "Failed to confirm registrations.", "error");
+                    }
+                  }}
+                >
+                  Approve All
+                </button>
+              </div>
+              <div style={{ background: "white", borderRadius: "var(--radius-md)", border: "1px solid var(--border-soft)", overflow: "hidden" }}>
+                <table className="table" style={{ margin: 0, border: "none" }}>
+                  <thead><tr><th>Matric Number</th><th>Full Name</th></tr></thead>
+                  <tbody>
+                    {selectedRoster.pendingRegistrations.map((s) => (
+                      <tr key={s.id}>
+                        <td>{s.matric}</td>
+                        <td>{s.name}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="card">
             <table className="table">

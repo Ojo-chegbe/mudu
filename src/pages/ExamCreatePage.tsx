@@ -9,9 +9,16 @@ import {
   deleteQuestionRequest,
   fetchRosters,
   generateAiQuestionsFromTextRequest,
+  generateAiQuestionsFromFileRequest,
+  approveAiQuestionRequest,
+  discardAiQuestionRequest,
   publishExamRequest,
   updateExamRequest,
   updateQuestionRequest,
+  fetchExamByIdRequest,
+  createRosterRegistrationLinkRequest,
+  confirmRosterRegistrationsRequest,
+  createRosterRequest,
   type RosterRecord
 } from "../api/client";
 
@@ -24,6 +31,7 @@ type EditorQuestion = {
   options: string[];
   correctAnswer: string;
   points: number;
+  status?: string;
 };
 
 const makeId = () => `q_${crypto.randomUUID().slice(0, 8)}`;
@@ -56,12 +64,20 @@ function StepIndicator({ current }: { current: number }) {
 }
 
 /* ── Step 1: Details ── */
-function StepDetails({ onNext }: { onNext: (data: { title: string; courseCode: string; date: string; time: string; durationMinutes: number }) => void }) {
-  const [title, setTitle] = useState("");
-  const [course, setCourse] = useState("");
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
-  const [duration, setDuration] = useState(60);
+function StepDetails({ details, onNext }: { details: any; onNext: (data: { title: string; courseCode: string; date: string; time: string; durationMinutes: number }) => void }) {
+  const [title, setTitle] = useState(details.title || "");
+  const [course, setCourse] = useState(details.courseCode || "");
+  const [date, setDate] = useState(details.date || "");
+  const [time, setTime] = useState(details.time || "");
+  const [duration, setDuration] = useState(details.durationMinutes || 60);
+
+  useEffect(() => {
+    setTitle(details.title || "");
+    setCourse(details.courseCode || "");
+    setDate(details.date || "");
+    setTime(details.time || "");
+    setDuration(details.durationMinutes || 60);
+  }, [details]);
 
   return (
     <div className="stack gap-4">
@@ -106,7 +122,7 @@ function StepDetails({ onNext }: { onNext: (data: { title: string; courseCode: s
 
 /* ── Inline Question Editor Card (Google Forms style) ── */
 function QuestionEditorCard({
-  question, index, isActive, onFocus, onChange, onDelete
+  question, index, isActive, onFocus, onChange, onDelete, onApprove, onDiscard
 }: {
   question: EditorQuestion;
   index: number;
@@ -114,6 +130,8 @@ function QuestionEditorCard({
   onFocus: () => void;
   onChange: (updated: EditorQuestion) => void;
   onDelete: () => void;
+  onApprove?: () => void;
+  onDiscard?: () => void;
 }) {
   const updateField = <K extends keyof EditorQuestion>(key: K, value: EditorQuestion[K]) => {
     onChange({ ...question, [key]: value });
@@ -175,6 +193,16 @@ function QuestionEditorCard({
           <IconTrash />
         </button>
       </div>
+
+      {question.status === "Pending" && (
+        <div style={{ padding: "8px 16px", background: "var(--color-warning-light)", color: "var(--color-warning-dark)", fontSize: "13px", display: "flex", gap: "12px", alignItems: "center" }}>
+          <strong>AI Generated Question</strong>
+          <span>Review the content before approving.</span>
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-secondary btn-sm" style={{ background: "white" }} onClick={(e) => { e.stopPropagation(); onDiscard?.(); }}>Discard</button>
+          <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); onApprove?.(); }}>Approve</button>
+        </div>
+      )}
 
       {/* Question text */}
       <input
@@ -252,10 +280,11 @@ function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
   setQuestions: React.Dispatch<React.SetStateAction<EditorQuestion[]>>;
   examId: string | null;
 }) {
-  const sourceMode = useAppStore((s) => s.examBuilder.sourceMode);
-  const setSourceMode = useAppStore((s) => s.setSourceMode);
+  const [sourceMode, setSourceMode] = useState<"upload" | "paste" | "manual" | "bank">("manual");
+  const [aiSettings] = useState({ count: 20, difficulty: "Intermediate" as const, mix: "MCQ 60 / Fill 30 / Essay 10" });
   const pushToast = useAppStore((s) => s.pushToast);
   const [pasteText, setPasteText] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
@@ -320,22 +349,34 @@ function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
       return;
     }
 
-    const sourceText = sourceMode === "paste"
-      ? pasteText.trim()
-      : "Uploaded source document content provided by lecturer.";
-
-    if (!sourceText) {
+    if (sourceMode === "paste" && !pasteText.trim()) {
       pushToast("Provide source text before generation.", "error");
+      return;
+    }
+
+    if (sourceMode === "upload" && !selectedFile) {
+      pushToast("Please select a file to upload.", "error");
       return;
     }
 
     setGenerating(true);
     try {
-      const payload = await generateAiQuestionsFromTextRequest({
-        examId,
-        sourceText,
-        count: 5
-      });
+      let payload;
+      if (sourceMode === "upload" && selectedFile) {
+        payload = await generateAiQuestionsFromFileRequest({
+          examId,
+          file: selectedFile,
+          difficulty: aiSettings.difficulty,
+          count: aiSettings.count
+        });
+      } else {
+        payload = await generateAiQuestionsFromTextRequest({
+          examId,
+          sourceText: pasteText.trim(),
+          difficulty: aiSettings.difficulty,
+          count: aiSettings.count
+        });
+      }
 
       const generated: EditorQuestion[] = payload.questions.map((q) => ({
         id: makeId(),
@@ -344,9 +385,11 @@ function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
         text: q.text,
         options: q.options,
         correctAnswer: q.correctAnswer,
-        points: q.points
+        points: q.points,
+        status: q.status
       }));
-      applyQuestions(generated);
+      applyQuestions([...questions, ...generated]);
+      pushToast("AI generated questions successfully added.", "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI generation failed.";
       pushToast(message, "error");
@@ -428,21 +471,34 @@ function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
       {/* Upload panel */}
       {sourceMode === "upload" && (
         <div className="card stack gap-3">
-          <div className="drop-zone" onClick={() => setUploadProgress((p) => p >= 100 ? 0 : p + 25)}>
+          <label className="drop-zone" style={{ cursor: "pointer", position: "relative" }}>
+            <input 
+              type="file" 
+              accept=".txt,.pdf,.docx,application/pdf,application/msword,text/plain" 
+              style={{ opacity: 0, position: "absolute", top: 0, left: 0, right: 0, bottom: 0, cursor: "pointer" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  setSelectedFile(file);
+                  setUploadProgress(100);
+                }
+              }}
+            />
             <div className="drop-zone-icon"><IconUpload /></div>
             <div className="drop-zone-text">Drag & drop your file here, or click to browse</div>
-            <div style={{ fontSize: "12px", color: "var(--text-tertiary)", marginTop: "4px" }}>PDF, DOCX, or TXT — max 10MB</div>
-          </div>
-          {uploadProgress > 0 && (
+            <div style={{ fontSize: "12px", color: "var(--text-tertiary)", marginTop: "4px" }}>PDF, DOCX, or TXT — max 5MB</div>
+          </label>
+          
+          {selectedFile && (
             <div className="stack gap-2">
-              <div className="row-between" style={{ fontSize: "13px" }}>
-                <span>document.pdf</span>
-                <span>{uploadProgress}%</span>
+              <div className="row-between" style={{ fontSize: "13px", padding: "12px", background: "var(--gray-50)", borderRadius: "var(--radius-md)" }}>
+                <span style={{ fontWeight: 500 }}>{selectedFile.name}</span>
+                <span style={{ color: "var(--color-success)", fontWeight: 500 }}>Ready</span>
               </div>
-              <div className="progress-track"><div className="progress-fill" style={{ width: `${uploadProgress}%` }} /></div>
             </div>
           )}
-          {uploadProgress >= 100 && (
+          
+          {selectedFile && (
             <button className="btn btn-primary" onClick={handleGenerate} disabled={generating}>
               {generating ? "Generating..." : "Generate Questions from Document"}
             </button>
@@ -512,6 +568,30 @@ function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
             </div>
           )}
 
+          {/* Approve All Bar */}
+          {questions.some(q => q.status === "Pending") && (
+            <div className="card-flat row-between" style={{ background: "var(--color-primary-light)" }}>
+              <div style={{ fontSize: "14px", color: "var(--color-primary-dark)", fontWeight: 500 }}>
+                You have {questions.filter(q => q.status === "Pending").length} pending questions generated by AI.
+              </div>
+              <button 
+                className="btn btn-primary btn-sm"
+                onClick={async () => {
+                  try {
+                    const pendingQuestions = questions.filter(q => q.status === "Pending" && q.backendId);
+                    await Promise.all(pendingQuestions.map(q => approveAiQuestionRequest(q.backendId!)));
+                    applyQuestions(questions.map(q => q.status === "Pending" ? { ...q, status: "Approved" } : q));
+                    pushToast(`Approved ${pendingQuestions.length} questions.`, "success");
+                  } catch (err) {
+                    pushToast("Failed to approve all questions.", "error");
+                  }
+                }}
+              >
+                Approve All
+              </button>
+            </div>
+          )}
+
           {/* Question cards */}
           {questions.map((q, i) => (
             <QuestionEditorCard
@@ -522,6 +602,16 @@ function StepQuestions({ onBack, onNext, questions, setQuestions, examId }: {
               onFocus={() => setActiveCardId(q.id)}
               onChange={(updated) => updateQuestion(q.id, updated)}
               onDelete={() => deleteQuestion(q.id)}
+              onApprove={() => {
+                if (!q.backendId) return;
+                void approveAiQuestionRequest(q.backendId);
+                updateQuestion(q.id, { ...q, status: "Approved" });
+              }}
+              onDiscard={() => {
+                if (!q.backendId) return;
+                void discardAiQuestionRequest(q.backendId);
+                deleteQuestion(q.id);
+              }}
             />
           ))}
 
@@ -565,10 +655,17 @@ function StepPublish({
   onRosterChanged: (rosterId: string) => void;
 }) {
   const navigate = useNavigate();
+  const pushToast = useAppStore((s) => s.pushToast);
   const [searchParams] = useSearchParams();
   const [rosters, setRosters] = useState<RosterRecord[]>([]);
   const [loadingRosters, setLoadingRosters] = useState(false);
   const [rosterId, setRosterId] = useState(rosters[0]?.id ?? "");
+  const [registrationLink, setRegistrationLink] = useState("");
+  const [generatingLink, setGeneratingLink] = useState(false);
+  const [shuffleQuestions, setShuffleQuestions] = useState(true);
+  const [fullscreenRequired, setFullscreenRequired] = useState(true);
+  const [tabMonitoringEnabled, setTabMonitoringEnabled] = useState(true);
+  const [showScoreToStudent, setShowScoreToStudent] = useState(false);
   const selectedRoster = rosters.find((r) => r.id === rosterId) ?? null;
 
   useEffect(() => {
@@ -599,15 +696,42 @@ function StepPublish({
   }, [searchParams, rosters, rosterId]);
 
   const handlePublish = async () => {
-    if (!examId || !rosterId) return;
-    await updateExamRequest(examId, { rosterId });
-    await publishExamRequest(examId);
-    navigate("/");
+    if (!examId || !rosterId) {
+      pushToast("Missing exam or roster. Please ensure a roster is selected.", "error");
+      return;
+    }
+    try {
+      await updateExamRequest(examId, { rosterId });
+      await publishExamRequest(examId);
+      pushToast("Exam published successfully!", "success");
+      navigate("/");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to publish exam.", "error");
+    }
   };
 
-  const registrationLink = selectedRoster
-    ? `http://mudu.local/register/${selectedRoster.id}`
-    : "";
+  const handleGenerateLink = async () => {
+    if (!selectedRoster) return;
+    setGeneratingLink(true);
+    try {
+
+      const res = await createRosterRegistrationLinkRequest(selectedRoster.id);
+      setRegistrationLink(`${window.location.origin}/register/${res.token}`);
+      pushToast("Registration link generated!", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Failed to generate link.", "error");
+    } finally {
+      setGeneratingLink(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!registrationLink) return;
+    const interval = setInterval(() => {
+      void fetchRosters().then(setRosters).catch(() => {});
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [registrationLink]);
 
   return (
     <div className="card stack gap-4">
@@ -624,6 +748,7 @@ function StepPublish({
             onChange={(e) => {
               setRosterId(e.target.value);
               onRosterChanged(e.target.value);
+              setRegistrationLink("");
             }}
           >
             {rosters.map((r) => <option key={r.id} value={r.id}>{r.name} ({r.students.length} students)</option>)}
@@ -639,16 +764,74 @@ function StepPublish({
       </div>
 
       <div className="card-flat stack gap-2">
-        <div style={{ fontWeight: 600, fontSize: "14px" }}>Registration Link</div>
-        <div style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
-          Create and share a student registration link while setting up this exam.
+        <div className="row-between">
+          <div className="stack gap-1">
+            <div style={{ fontWeight: 600, fontSize: "14px" }}>Registration Link</div>
+            <div style={{ fontSize: "13px", color: "var(--text-tertiary)" }}>
+              Create and share a student registration link while setting up this exam.
+            </div>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={handleGenerateLink} disabled={generatingLink || !selectedRoster}>
+            {generatingLink ? "Generating..." : registrationLink ? "Link Active" : "Generate Link"}
+          </button>
         </div>
-        <div className="connection-box">
-          <div className="connection-ip" style={{ fontSize: "16px", wordBreak: "break-all" }}>
-            {registrationLink || "Select a roster to generate link"}
+        
+        {registrationLink ? (
+          <div className="connection-box">
+            <div className="connection-ip" style={{ fontSize: "16px", wordBreak: "break-all" }}>
+              {registrationLink}
+            </div>
+          </div>
+        ) : (
+          <div className="connection-box" style={{ opacity: 0.5 }}>
+            <div className="connection-ip" style={{ fontSize: "16px", wordBreak: "break-all" }}>
+              {selectedRoster ? "Click 'Generate Link' to create a link" : "Select a roster to generate link"}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {selectedRoster?.pendingRegistrations && selectedRoster.pendingRegistrations.length > 0 && (
+        <div className="card stack gap-3" style={{ background: "var(--color-warning-light)" }}>
+          <div className="row-between">
+            <div>
+              <h3 style={{ fontSize: "15px", fontWeight: 600, color: "var(--color-warning-dark)", margin: 0 }}>Pending Registrations</h3>
+              <p style={{ fontSize: "13px", color: "var(--color-warning-dark)", marginTop: "4px" }}>
+                {selectedRoster.pendingRegistrations.length} students have registered and are waiting for your approval.
+              </p>
+            </div>
+            <button
+              className="btn btn-primary"
+              onClick={async () => {
+                try {
+
+                  await confirmRosterRegistrationsRequest(selectedRoster.id);
+                  const items = await fetchRosters();
+                  setRosters(items);
+                  pushToast(`Approved ${selectedRoster.pendingRegistrations!.length} registrations.`, "success");
+                } catch (err) {
+                  pushToast(err instanceof Error ? err.message : "Failed to confirm registrations.", "error");
+                }
+              }}
+            >
+              Approve All
+            </button>
+          </div>
+          <div style={{ background: "white", borderRadius: "var(--radius-md)", border: "1px solid var(--border-soft)", overflow: "hidden", maxHeight: "200px", overflowY: "auto" }}>
+            <table className="table" style={{ margin: 0, border: "none" }}>
+              <thead><tr><th>Matric Number</th><th>Full Name</th></tr></thead>
+              <tbody>
+                {selectedRoster.pendingRegistrations.map((s) => (
+                  <tr key={s.id}>
+                    <td>{s.matric}</td>
+                    <td>{s.name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
+      )}
 
       <h2 style={{ fontSize: "18px", fontWeight: 600, marginTop: "var(--sp-4)" }}>Exam Summary</h2>
       <div className="stack gap-2" style={{ background: "var(--gray-50)", borderRadius: "var(--radius-md)", padding: "16px" }}>
@@ -660,10 +843,22 @@ function StepPublish({
 
       <h3 style={{ fontSize: "15px", fontWeight: 600 }}>Exam Settings</h3>
       <div className="stack gap-2">
-        <div className="switch-row"><span>Fullscreen Enforcement</span><button className="switch-track on"><span className="switch-knob" /></button></div>
-        <div className="switch-row"><span>Tab Monitoring</span><button className="switch-track on"><span className="switch-knob" /></button></div>
-        <div className="switch-row"><span>Shuffle Questions</span><button className="switch-track on"><span className="switch-knob" /></button></div>
-        <div className="switch-row"><span>Show Score to Student</span><button className="switch-track"><span className="switch-knob" /></button></div>
+        <div className="switch-row" onClick={() => setFullscreenRequired(!fullscreenRequired)} style={{ cursor: "pointer" }}>
+          <span>Fullscreen Enforcement</span>
+          <button className={`switch-track ${fullscreenRequired ? "on" : ""}`}><span className="switch-knob" /></button>
+        </div>
+        <div className="switch-row" onClick={() => setTabMonitoringEnabled(!tabMonitoringEnabled)} style={{ cursor: "pointer" }}>
+          <span>Tab Monitoring</span>
+          <button className={`switch-track ${tabMonitoringEnabled ? "on" : ""}`}><span className="switch-knob" /></button>
+        </div>
+        <div className="switch-row" onClick={() => setShuffleQuestions(!shuffleQuestions)} style={{ cursor: "pointer" }}>
+          <span>Shuffle Questions</span>
+          <button className={`switch-track ${shuffleQuestions ? "on" : ""}`}><span className="switch-knob" /></button>
+        </div>
+        <div className="switch-row" onClick={() => setShowScoreToStudent(!showScoreToStudent)} style={{ cursor: "pointer" }}>
+          <span>Show Score to Student</span>
+          <button className={`switch-track ${showScoreToStudent ? "on" : ""}`}><span className="switch-knob" /></button>
+        </div>
       </div>
 
       <div className="row-between">
@@ -680,21 +875,45 @@ function StepPublish({
 /* ── Main Export ── */
 export function ExamCreatePage() {
   const [searchParams] = useSearchParams();
-  const draft = useAppStore((s) => s.examBuilder.draft);
-  const setExamBuilderDraft = useAppStore((s) => s.setExamBuilderDraft);
   const [step, setStep] = useState(1);
   const [details, setDetails] = useState({
-    title: draft.title ?? "",
-    courseCode: draft.courseCode ?? "",
-    date: draft.date ?? "",
-    durationMinutes: draft.durationMinutes ?? 60,
-    passingScore: draft.passingScore ?? 50,
-    rosterId: draft.rosterId ?? ""
+    title: "",
+    courseCode: "",
+    date: "",
+    durationMinutes: 60,
+    passingScore: 50,
+    rosterId: ""
   });
   const [questions, setQuestions] = useState<EditorQuestion[]>([]);
-  const [examId, setExamId] = useState<string | null>(null);
+  const [examId, setExamId] = useState<string | null>(searchParams.get("examId"));
 
   const stepTitles = ["Fill in the details", "Create Questions", "Add Students"];
+
+  // Fetch existing exam if examId is provided
+  useEffect(() => {
+    if (examId) {
+      fetchExamByIdRequest(examId).then((exam) => {
+        setDetails({
+          title: exam.title,
+          courseCode: exam.courseCode ?? "",
+          date: exam.date ?? "",
+          durationMinutes: exam.durationMinutes ?? 60,
+          passingScore: exam.passingScore ?? 50,
+          rosterId: exam.rosterId ?? ""
+        });
+        setQuestions(exam.questions.map((q) => ({
+          id: makeId(),
+          backendId: q.id,
+          type: q.type as QuestionType,
+          text: q.text,
+          options: q.options || [],
+          correctAnswer: q.correctAnswer || "",
+          points: q.points || 1,
+          status: q.status
+        })));
+      });
+    }
+  }, [examId]);
 
   useEffect(() => {
     const requestedStep = Number(searchParams.get("step"));
@@ -718,20 +937,21 @@ export function ExamCreatePage() {
         <StepIndicator current={step} />
       </div>
 
-      {step === 1 && <StepDetails onNext={async (data) => {
+      {step === 1 && <StepDetails details={details} onNext={async (data) => {
         const rosterList = await fetchRosters();
-        const primaryRosterId = rosterList[0]?.id ?? "";
+        let primaryRosterId = rosterList[0]?.id ?? "";
+
+        if (!primaryRosterId) {
+          const newRoster = await createRosterRequest({ name: "Default Roster", courseCode: data.courseCode || undefined });
+          primaryRosterId = newRoster.id;
+        }
+
         const updatedDetails = { ...details, ...data, rosterId: primaryRosterId };
         setDetails(updatedDetails);
-        setExamBuilderDraft(updatedDetails);
 
         if (examId) {
           await updateExamRequest(examId, updatedDetails);
           setStep(2);
-          return;
-        }
-
-        if (!primaryRosterId) {
           return;
         }
 
@@ -758,7 +978,6 @@ export function ExamCreatePage() {
           examId={examId}
           onRosterChanged={(rosterId) => {
             setDetails((prev) => ({ ...prev, rosterId }));
-            setExamBuilderDraft({ rosterId });
           }}
         />
       )}

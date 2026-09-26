@@ -64,8 +64,18 @@ export function upsertResult(input: {
 }
 
 export function updateEssayScore(resultId: string, essayScore: number): ResultRecord | null {
-  const result = db.query("UPDATE results SET essay_score = ?, graded_at = ? WHERE id = ?").run(essayScore, nowIso(), resultId);
-  if (Number(result.changes ?? 0) < 1) return null;
+  const result = getResultById(resultId);
+  if (!result) return null;
+
+  const totalScore = result.objectiveScore + essayScore;
+  const percentage = result.maxScore > 0 ? Number(((totalScore / result.maxScore) * 100).toFixed(2)) : 0;
+
+  db.query(
+    `UPDATE results 
+     SET essay_score = ?, total_score = ?, percentage = ?, status = 'Completed', graded_at = ? 
+     WHERE id = ?`
+  ).run(essayScore, totalScore, percentage, nowIso(), resultId);
+
   return getResultById(resultId);
 }
 
@@ -157,18 +167,53 @@ export function getScoreBandsByRun(runId: string): Array<{ range: string; count:
 }
 
 export function getRunQuestionInsights(runId: string): Array<{ id: string; type: string; successRate: string; issue: string }> {
-  const rows = db
+  // Fetch questions
+  const questions = db
     .query(
-      `SELECT
-        q.id AS id,
-        q.type AS type,
-        'N/A' AS successRate,
-        'Pending deeper analytics' AS issue
+      `SELECT q.id, q.type, q.correct_answer AS correctAnswer
        FROM questions q
        JOIN exam_runs r ON r.exam_id = q.exam_id
        WHERE r.id = ?
        ORDER BY q.order_index ASC`
     )
-    .all(runId) as Array<{ id: string; type: string; successRate: string; issue: string }>;
-  return rows;
+    .all(runId) as Array<{ id: string; type: string; correctAnswer: string | null }>;
+
+  // Fetch answers
+  const answers = db
+    .query(
+      `SELECT a.question_id AS questionId, a.response_text AS responseText, a.selected_option AS selectedOption
+       FROM answers a
+       JOIN student_sessions ss ON ss.id = a.student_session_id
+       WHERE ss.run_id = ?`
+    )
+    .all(runId) as Array<{ questionId: string; responseText: string | null; selectedOption: string | null }>;
+
+  const insights = questions.map((q) => {
+    const qAnswers = answers.filter((a) => a.questionId === q.id);
+    if (qAnswers.length === 0 || q.type === "ESSAY") {
+      return { id: q.id, type: q.type, successRate: "N/A", issue: q.type === "ESSAY" ? "Manual grading required" : "No answers yet" };
+    }
+
+    let correctCount = 0;
+    for (const ans of qAnswers) {
+      const submittedValue = (q.type === "MCQ" ? ans.selectedOption : ans.responseText) ?? "";
+      const rawCorrect = q.correctAnswer ?? "";
+      
+      const normSubmitted = q.type === "FILL" ? submittedValue.trim().toLowerCase() : submittedValue.trim();
+      const normCorrect = q.type === "FILL" ? rawCorrect.trim().toLowerCase() : rawCorrect.trim();
+      
+      if (normSubmitted !== "" && normSubmitted === normCorrect) {
+        correctCount++;
+      }
+    }
+
+    const percentage = Math.round((correctCount / qAnswers.length) * 100);
+    let issue = "None";
+    if (percentage < 30) issue = "Too hard / Confusing";
+    if (percentage > 90) issue = "Too easy";
+
+    return { id: q.id, type: q.type, successRate: `${percentage}%`, issue };
+  });
+
+  return insights;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { IconGrid, IconList, IconFlag, IconHistoryClock, IconCheck, IconTrash } from "../components/Icons";
 import { DropdownMenu } from "../components/DropdownMenu";
 import { Button } from "../components/primitives";
@@ -41,10 +42,14 @@ function formatTime(total: number): string {
 }
 
 export function MonitorPage() {
+  const [searchParams] = useSearchParams();
+  const incomingRunId = searchParams.get("runId");
+
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [selectedExamId, setSelectedExamId] = useState("");
   const [sessions, setSessions] = useState<RunSessionRecord[]>([]);
   const [endingRunId, setEndingRunId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const askConfirm = useAppStore((s) => s.askConfirm);
   const pushToast = useAppStore((s) => s.pushToast);
 
@@ -75,24 +80,92 @@ export function MonitorPage() {
 
   useEffect(() => {
     let mounted = true;
+    setLoading(true);
     void loadExams()
       .then((items) => {
         if (!mounted) return;
-        const preferred = items.find((item) => (item.status === "Running" || item.status === "Active") && item.activeRunId)?.id;
-        const first = preferred ?? items[0]?.id ?? "";
-        setSelectedExamId(first);
-        if (first) {
-          const exam = items.find((item) => item.id === first) ?? null;
-          void loadSessions(exam?.activeRunId ?? null);
+
+        // If we have an incoming runId from LaunchPage, find its exam
+        let preferredExamId = "";
+        if (incomingRunId) {
+          const match = items.find((item) => item.activeRunId === incomingRunId);
+          if (match) {
+            preferredExamId = match.id;
+          }
+        }
+
+        // Fallback: find any running exam
+        if (!preferredExamId) {
+          const running = items.find((item) => (item.status === "Running" || item.status === "Active") && item.activeRunId);
+          preferredExamId = running?.id ?? items[0]?.id ?? "";
+        }
+
+        setSelectedExamId(preferredExamId);
+        if (preferredExamId) {
+          const exam = items.find((item) => item.id === preferredExamId) ?? null;
+          void loadSessions(incomingRunId ?? exam?.activeRunId ?? null);
         }
       })
       .catch((err) => {
         pushToast(err instanceof Error ? err.message : "Failed to load exams.", "error");
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
       });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [incomingRunId]);
+
+  // WebSocket & Polling Logic
+  useEffect(() => {
+    const activeRunId = exams.find((exam) => exam.id === selectedExamId)?.activeRunId ?? null;
+    if (!activeRunId) return;
+
+    let ws: WebSocket | null = null;
+    let pollTimer: number | null = null;
+    let mounted = true;
+
+    const connectWs = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?role=lecturer&runId=${activeRunId}`);
+
+      ws.onmessage = (event) => {
+        if (!mounted) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (["student_connected", "student_disconnected", "session_submitted", "session_flagged"].includes(data.type)) {
+            // Trigger a fast HTTP reload to sync the full state without broadcasting large payloads
+            void loadSessions(activeRunId);
+          }
+        } catch (e) {
+          console.error("WS parse error", e);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!mounted) return;
+        // Fallback polling every 5s if WebSocket is closed
+        pollTimer = window.setInterval(() => {
+          void loadSessions(activeRunId);
+        }, 5000);
+      };
+    };
+
+    connectWs();
+
+    // Initial fallback interval just in case WS never opens
+    pollTimer = window.setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      void loadSessions(activeRunId);
+    }, 5000);
+
+    return () => {
+      mounted = false;
+      if (ws) ws.close();
+      if (pollTimer) window.clearInterval(pollTimer);
+    };
+  }, [selectedExamId, exams]);
 
   const visible = flaggedOnly ? sessions.filter((s) => s.flags > 0) : sessions;
   const connected = sessions.filter((s) => s.status === "Connected" || s.status === "Active").length;
@@ -221,7 +294,7 @@ export function MonitorPage() {
         <div className="card">
           <table className="table">
             <thead>
-              <tr><th>Name</th><th>Matric</th><th>Status</th><th>Question</th><th>Flags</th><th>Time Left</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Matric</th><th>Status</th><th>Progress</th><th>Flags</th><th>Time Left</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {visible.map((s) => (
@@ -229,7 +302,7 @@ export function MonitorPage() {
                   <td style={{ fontWeight: 500 }}>{s.name}</td>
                   <td>{s.matric}</td>
                   <td><span className={`badge ${statusBadge(s.status)}`}>{s.status}</span></td>
-                  <td>Q{s.currentQuestion}</td>
+                  <td>{s.scoreText ? <span style={{ fontWeight: 600 }}>{s.scoreText}</span> : `Q${s.currentQuestion}`}</td>
                   <td>{s.flags > 0 ? <span style={{ color: "var(--color-warning)", fontWeight: 600 }}>{s.flags}</span> : "0"}</td>
                   <td>{formatTime(s.timeRemaining)}</td>
                   <td>
@@ -266,7 +339,7 @@ export function MonitorPage() {
               </div>
               <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>{s.matric}</div>
               <div className="row-between" style={{ marginTop: "8px", fontSize: "13px" }}>
-                <span>Q{s.currentQuestion}</span>
+                <span>{s.scoreText ? <span style={{ fontWeight: 600 }}>{s.scoreText}</span> : `Q${s.currentQuestion}`}</span>
                 <span>{formatTime(s.timeRemaining)}</span>
               </div>
               {s.flags > 0 && (
@@ -290,7 +363,11 @@ export function MonitorPage() {
               <div className="stack gap-2" style={{ background: "var(--gray-50)", borderRadius: "8px", padding: "12px" }}>
                 <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Matric</span><span>{student.matric}</span></div>
                 <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Status</span><span className={`badge ${statusBadge(student.status)}`}>{student.status}</span></div>
-                <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Question</span><span>Q{student.currentQuestion}</span></div>
+                {student.scoreText ? (
+                  <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Score</span><span style={{ fontWeight: 600 }}>{student.scoreText}</span></div>
+                ) : (
+                  <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Question</span><span>Q{student.currentQuestion}</span></div>
+                )}
                 <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Flags</span><span>{student.flags}</span></div>
                 <div className="row-between"><span style={{ color: "var(--text-tertiary)" }}>Time Left</span><span>{formatTime(student.timeRemaining)}</span></div>
                 {student.reconnectGapSeconds > 0 && (

@@ -6,6 +6,7 @@ import { getRunById } from "../repositories/runs";
 import { gradeObjectiveSubmission } from "../services/grading";
 import { computeSessionEndsAt, deriveRemainingSeconds, syncManagedSessionTimer } from "../services/timers";
 import { findStudentForExam, studentExamStateError } from "./exams";
+import { broadcastSessionFlagged, broadcastSessionSubmitted } from "../realtime/hub";
 
 function hashStudentToken(token: string): string {
   return new Bun.CryptoHasher("sha256").update(token).digest("hex");
@@ -45,7 +46,7 @@ function rotateStudentToken(sessionId: string): string {
   return token;
 }
 
-type ValidStudentSession = {
+export type ValidStudentSession = {
   id: string;
   runId: string;
   examId: string;
@@ -156,7 +157,7 @@ function warningMessageForSession(flagCount: number, status: string): string | n
   return null;
 }
 
-function getValidStudentSessionByToken(token: string): ValidStudentSession | Response {
+export function getValidStudentSessionByToken(token: string): ValidStudentSession | Response {
   const tokenHash = hashStudentToken(token);
   const row = db
     .query(
@@ -191,7 +192,7 @@ function getValidStudentSessionByToken(token: string): ValidStudentSession | Res
     return apiError(401, "STUDENT_SESSION_EXPIRED", "Student session has expired.");
   }
 
-  return syncManagedSessionTimer({
+  const synced = syncManagedSessionTimer({
     id: row.id,
     examId: row.examId,
     studentId: row.studentId,
@@ -204,6 +205,12 @@ function getValidStudentSessionByToken(token: string): ValidStudentSession | Res
     endsAt: row.endsAt,
     flagCount: row.flagCount
   });
+
+  return {
+    ...synced,
+    currentQuestionIndex: synced.currentQuestionIndex ?? 0,
+    flagCount: synced.flagCount ?? 0,
+  } as ValidStudentSession;
 }
 
 function lastGapSecondsSinceEvent(studentSessionId: string): number {
@@ -549,6 +556,7 @@ async function handleStudentSession(request: Request): Promise<Response> {
 
   return json({
     sessionId: session.id,
+    runId: session.runId,
     status: session.status,
     currentQuestion: session.currentQuestionIndex + 1,
     endsAt: session.endsAt,
@@ -598,6 +606,7 @@ async function handleStudentExam(request: Request): Promise<Response> {
   return json({
     session: {
       id: session.id,
+      runId: session.runId,
       status: session.status,
       currentQuestion: session.currentQuestionIndex + 1,
       endsAt: session.endsAt,
@@ -788,6 +797,10 @@ async function handleStudentEvent(request: Request): Promise<Response> {
     }
   });
 
+  if (nextFlagCount !== session.flagCount || behavior.sessionStatus === "Flagged") {
+    broadcastSessionFlagged(session.runId, session.id, nextFlagCount);
+  }
+
   return json({
     status: "ok",
     eventType,
@@ -813,6 +826,7 @@ async function handleStudentSubmit(request: Request): Promise<Response> {
     "UPDATE exam_sessions SET status = 'Submitted', submitted_at = ?, updated_at = ? WHERE student_id = ? AND exam_id = ?"
   ).run(now, now, session.studentId, session.examId);
   gradeObjectiveSubmission(session.id);
+  broadcastSessionSubmitted(session.runId, session.id);
 
   return json({ status: "submitted", submittedAt: now });
 }

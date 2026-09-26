@@ -22,6 +22,10 @@ type CreateExamBody = {
   passingScore?: number;
   rosterId?: string;
   status?: string;
+  shuffleQuestions?: boolean;
+  fullscreenRequired?: boolean;
+  tabMonitoringEnabled?: boolean;
+  showScoreToStudent?: boolean;
 };
 
 type CreateQuestionBody = {
@@ -58,7 +62,9 @@ export async function handleExamCrudRoutes(request: Request, pathname: string, u
   if (pathname === "/api/exams" && request.method === "GET") {
     const status = url.searchParams.get("status") ?? undefined;
     const q = url.searchParams.get("q") ?? undefined;
-    return json({ exams: listExams({ status, q }) });
+    const matric = url.searchParams.get("matric") ?? undefined;
+
+    return json({ exams: listExams({ status, q, matric }) });
   }
 
   if (pathname === "/api/exams" && request.method === "POST") {
@@ -76,7 +82,11 @@ export async function handleExamCrudRoutes(request: Request, pathname: string, u
       durationMinutes: Math.max(1, Number(body?.durationMinutes ?? 60)),
       passingScore: Math.max(0, Math.min(100, Number(body?.passingScore ?? 50))),
       rosterId,
-      status: body?.status?.trim() || "Draft"
+      status: body?.status?.trim() || "Draft",
+      shuffleQuestions: body?.shuffleQuestions ?? true,
+      fullscreenRequired: body?.fullscreenRequired ?? true,
+      tabMonitoringEnabled: body?.tabMonitoringEnabled ?? true,
+      showScoreToStudent: body?.showScoreToStudent ?? false
     });
 
     return json({ exam }, 201);
@@ -107,7 +117,11 @@ export async function handleExamCrudRoutes(request: Request, pathname: string, u
       durationMinutes: body.durationMinutes,
       passingScore: body.passingScore,
       rosterId: body.rosterId?.trim(),
-      status: body.status?.trim()
+      status: body.status?.trim(),
+      shuffleQuestions: body.shuffleQuestions,
+      fullscreenRequired: body.fullscreenRequired,
+      tabMonitoringEnabled: body.tabMonitoringEnabled,
+      showScoreToStudent: body.showScoreToStudent
     });
 
     if (!updated) {

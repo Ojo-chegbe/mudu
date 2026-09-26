@@ -231,7 +231,28 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
   synced_at TEXT
 );
 
--- Legacy tables kept for currently mounted UI routes while migration completes.
+
+
+CREATE INDEX IF NOT EXISTS idx_exams_status ON exams(status);
+CREATE INDEX IF NOT EXISTS idx_exams_roster_id ON exams(roster_id);
+CREATE INDEX IF NOT EXISTS idx_roster_students_roster_id ON roster_students(roster_id);
+CREATE INDEX IF NOT EXISTS idx_roster_registration_tokens_roster_id ON roster_registration_tokens(roster_id);
+CREATE INDEX IF NOT EXISTS idx_roster_registration_tokens_status ON roster_registration_tokens(status);
+CREATE INDEX IF NOT EXISTS idx_roster_pending_registrations_roster_id ON roster_pending_registrations(roster_id);
+CREATE INDEX IF NOT EXISTS idx_questions_exam_id_order ON questions(exam_id, order_index);
+CREATE INDEX IF NOT EXISTS idx_ai_generation_jobs_exam_id ON ai_generation_jobs(exam_id);
+CREATE INDEX IF NOT EXISTS idx_exam_runs_exam_status ON exam_runs(exam_id, status);
+CREATE INDEX IF NOT EXISTS idx_exam_runs_join_code ON exam_runs(join_code);
+CREATE INDEX IF NOT EXISTS idx_student_sessions_run_status ON student_sessions(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_student_sessions_student_id ON student_sessions(student_id);
+CREATE INDEX IF NOT EXISTS idx_answers_student_session_id ON answers(student_session_id);
+CREATE INDEX IF NOT EXISTS idx_answers_question_id ON answers(question_id);
+CREATE INDEX IF NOT EXISTS idx_session_events_run_id ON session_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_session_events_student_session_id ON session_events(student_session_id);
+CREATE INDEX IF NOT EXISTS idx_results_run_id ON results(run_id);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_status ON sync_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_entity ON sync_jobs(entity_type, entity_id);
+
 CREATE TABLE IF NOT EXISTS exam_sessions (
   id TEXT PRIMARY KEY,
   exam_id TEXT NOT NULL,
@@ -292,24 +313,5 @@ CREATE TABLE IF NOT EXISTS sync_queue (
   FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_exams_status ON exams(status);
-CREATE INDEX IF NOT EXISTS idx_exams_roster_id ON exams(roster_id);
-CREATE INDEX IF NOT EXISTS idx_roster_students_roster_id ON roster_students(roster_id);
-CREATE INDEX IF NOT EXISTS idx_roster_registration_tokens_roster_id ON roster_registration_tokens(roster_id);
-CREATE INDEX IF NOT EXISTS idx_roster_registration_tokens_status ON roster_registration_tokens(status);
-CREATE INDEX IF NOT EXISTS idx_roster_pending_registrations_roster_id ON roster_pending_registrations(roster_id);
-CREATE INDEX IF NOT EXISTS idx_questions_exam_id_order ON questions(exam_id, order_index);
-CREATE INDEX IF NOT EXISTS idx_ai_generation_jobs_exam_id ON ai_generation_jobs(exam_id);
-CREATE INDEX IF NOT EXISTS idx_exam_runs_exam_status ON exam_runs(exam_id, status);
-CREATE INDEX IF NOT EXISTS idx_exam_runs_join_code ON exam_runs(join_code);
-CREATE INDEX IF NOT EXISTS idx_student_sessions_run_status ON student_sessions(run_id, status);
-CREATE INDEX IF NOT EXISTS idx_student_sessions_student_id ON student_sessions(student_id);
-CREATE INDEX IF NOT EXISTS idx_answers_student_session_id ON answers(student_session_id);
-CREATE INDEX IF NOT EXISTS idx_answers_question_id ON answers(question_id);
-CREATE INDEX IF NOT EXISTS idx_session_events_run_id ON session_events(run_id);
-CREATE INDEX IF NOT EXISTS idx_session_events_student_session_id ON session_events(student_session_id);
-CREATE INDEX IF NOT EXISTS idx_results_run_id ON results(run_id);
-CREATE INDEX IF NOT EXISTS idx_sync_jobs_status ON sync_jobs(status);
-CREATE INDEX IF NOT EXISTS idx_sync_jobs_entity ON sync_jobs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_exam_sessions_exam_id_status ON exam_sessions(exam_id, status);
 CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status);
